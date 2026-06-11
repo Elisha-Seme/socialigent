@@ -2,7 +2,7 @@ const CLIENT_ID = process.env.LINKEDIN_CLIENT_ID!
 const CLIENT_SECRET = process.env.LINKEDIN_CLIENT_SECRET!
 const REDIRECT_URI = (process.env.NEXT_PUBLIC_APP_URL ?? '').trim() + '/api/linkedin/callback'
 
-const SCOPES = ['openid', 'profile', 'w_member_social', 'w_organization_social']
+const SCOPES = ['openid', 'profile', 'w_member_social']
 
 export function buildOAuthUrl(clientId: string): string {
   const state = Buffer.from(JSON.stringify({ clientId })).toString('base64url')
