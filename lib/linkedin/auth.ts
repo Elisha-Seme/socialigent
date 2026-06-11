@@ -1,6 +1,6 @@
 const CLIENT_ID = process.env.LINKEDIN_CLIENT_ID!
 const CLIENT_SECRET = process.env.LINKEDIN_CLIENT_SECRET!
-const REDIRECT_URI = `${process.env.NEXT_PUBLIC_APP_URL}/api/linkedin/callback`
+const REDIRECT_URI = (process.env.NEXT_PUBLIC_APP_URL ?? '').trim() + '/api/linkedin/callback'
 
 const SCOPES = ['openid', 'profile', 'w_organization_social', 'rw_organization_admin']
 
