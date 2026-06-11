@@ -6,21 +6,21 @@ import { Sparkles, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { toast } from 'react-hot-toast'
 
-export function GeneratePostButton({ clientId }: { clientId: string }) {
+export function RegenerateButton({ postId }: { postId: string }) {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
 
-  const handleGenerate = async () => {
+  const handleRegenerate = async () => {
     setLoading(true)
 
     const promise = fetch('/api/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clientId }),
+      body: JSON.stringify({ postId }),
     }).then(async (res) => {
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
-        throw new Error(body.error ?? 'Generation failed')
+        throw new Error(body.error ?? 'Regeneration failed')
       }
       return res.json()
     })
@@ -28,9 +28,9 @@ export function GeneratePostButton({ clientId }: { clientId: string }) {
     toast.promise(
       promise,
       {
-        loading: 'Generating post caption & image (could take 10-15s)...',
-        success: 'Post draft generated successfully! Sent to Telegram.',
-        error: (err) => err.message || 'Failed to generate post.',
+        loading: 'Regenerating post with rejection feedback (10-15s)...',
+        success: 'Post regenerated successfully! Sent to Telegram.',
+        error: (err) => err.message || 'Failed to regenerate post.',
       },
       {
         duration: 5000,
@@ -41,22 +41,20 @@ export function GeneratePostButton({ clientId }: { clientId: string }) {
       await promise
       router.refresh()
     } catch {
-      // Error handled by toast
+      // Handled by toast
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <div className="flex flex-col items-end gap-1">
-      <Button onClick={handleGenerate} disabled={loading}>
-        {loading ? (
-          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-        ) : (
-          <Sparkles className="mr-2 h-4 w-4" />
-        )}
-        {loading ? 'Generating…' : 'Generate post'}
-      </Button>
-    </div>
+    <Button onClick={handleRegenerate} disabled={loading} variant="outline" className="w-full sm:w-auto">
+      {loading ? (
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+      ) : (
+        <Sparkles className="mr-2 h-4 w-4" />
+      )}
+      {loading ? 'Regenerating…' : 'Regenerate post'}
+    </Button>
   )
 }

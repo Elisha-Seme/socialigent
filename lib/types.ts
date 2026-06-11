@@ -34,6 +34,7 @@ export interface Post {
   linkedin_post_id: string | null
   rejection_reason: string | null
   error_message: string | null
+  caption_variations: string[] | null
   retry_count: number
   created_at: string
   updated_at: string

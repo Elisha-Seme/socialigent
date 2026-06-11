@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation'
 import { LayoutDashboard, Users, FileText } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-const links = [
+export const links = [
   { href: '/', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/clients', label: 'Clients', icon: Users },
   { href: '/posts', label: 'Posts', icon: FileText },
@@ -15,7 +15,7 @@ export function Sidebar() {
   const pathname = usePathname()
 
   return (
-    <aside className="flex w-56 flex-col border-r bg-card">
+    <aside className="hidden md:flex w-56 flex-col border-r bg-card">
       <div className="flex h-14 items-center border-b px-4">
         <Link href="/" className="text-lg font-bold">
           Socialigent

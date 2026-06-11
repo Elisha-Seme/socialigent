@@ -1,29 +1,39 @@
 "use client"
 
 import { useState } from 'react'
-import { Send } from 'lucide-react'
+import { Send, Loader2 } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
+import { toast } from 'react-hot-toast'
 
 export function PublishButton({ postId }: { postId: string }) {
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const router = useRouter()
 
   async function handlePublish() {
     setLoading(true)
-    setError(null)
-    try {
-      const res = await fetch('/api/publish', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ postId }),
-      })
-      const data = await res.json()
+    
+    const promise = fetch('/api/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ postId }),
+    }).then(async (res) => {
+      const data = await res.json().catch(() => ({}))
       if (!res.ok) throw new Error(data.error ?? 'Publish failed')
+      return data
+    })
+
+    toast.promise(promise, {
+      loading: 'Publishing to LinkedIn...',
+      success: 'Published successfully!',
+      error: (err) => err.message || 'Publish failed.',
+    })
+
+    try {
+      await promise
       router.refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error')
+    } catch {
+      // Handled by toast
     } finally {
       setLoading(false)
     }
@@ -32,10 +42,13 @@ export function PublishButton({ postId }: { postId: string }) {
   return (
     <div className="space-y-2">
       <Button onClick={handlePublish} disabled={loading}>
-        <Send className="mr-2 h-4 w-4" />
+        {loading ? (
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+        ) : (
+          <Send className="mr-2 h-4 w-4" />
+        )}
         {loading ? 'Publishing…' : 'Publish to LinkedIn'}
       </Button>
-      {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
   )
 }

@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 
 export async function POST(request: Request) {
   const supabase = await createClient()
-  const { postId, caption } = await request.json()
+  const { postId, caption, scheduledAt } = await request.json()
 
   if (!postId) {
     return NextResponse.json({ error: 'postId is required' }, { status: 400 })
@@ -31,6 +31,9 @@ export async function POST(request: Request) {
   }
   if (typeof caption === 'string' && caption.trim()) {
     updates.caption = caption.trim()
+  }
+  if (typeof scheduledAt === 'string' && scheduledAt.trim()) {
+    updates.scheduled_at = new Date(scheduledAt).toISOString()
   }
 
   const { data, error } = await supabase

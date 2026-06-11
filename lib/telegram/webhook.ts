@@ -1,3 +1,16 @@
+export interface TelegramMessage {
+  message_id: number
+  chat: { id: number }
+  text?: string
+  caption?: string
+  reply_to_message?: {
+    message_id: number
+    text?: string
+    caption?: string
+  }
+  from?: { id: number; first_name: string; username?: string }
+}
+
 export interface TelegramCallbackQuery {
   id: string
   from: { id: number; first_name: string; username?: string }
@@ -10,6 +23,7 @@ export interface TelegramCallbackQuery {
 
 export interface TelegramUpdate {
   update_id: number
+  message?: TelegramMessage
   callback_query?: TelegramCallbackQuery
 }
 

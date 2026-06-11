@@ -2,8 +2,9 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Check, X } from 'lucide-react'
+import { Check, X, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { toast } from 'react-hot-toast'
 import {
   Dialog,
   DialogContent,
@@ -16,9 +17,11 @@ import { Textarea } from '@/components/ui/textarea'
 export function ApproveRejectButtons({
   postId,
   caption,
+  scheduledAt,
 }: {
   postId: string
   caption?: string
+  scheduledAt?: string
 }) {
   const router = useRouter()
   const [loading, setLoading] = useState<'approve' | 'reject' | null>(null)
@@ -41,8 +44,16 @@ export function ApproveRejectButtons({
   const handleApprove = async () => {
     setLoading('approve')
     setError(null)
+    const promise = call('/api/approve', { postId, caption, scheduledAt })
+
+    toast.promise(promise, {
+      loading: 'Approving post...',
+      success: 'Post approved successfully!',
+      error: (err) => err.message || 'Failed to approve post.',
+    })
+
     try {
-      await call('/api/approve', { postId, caption })
+      await promise
       router.refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed')
@@ -54,8 +65,16 @@ export function ApproveRejectButtons({
   const handleReject = async () => {
     setLoading('reject')
     setError(null)
+    const promise = call('/api/reject', { postId, reason: reason || null })
+
+    toast.promise(promise, {
+      loading: 'Rejecting post...',
+      success: 'Post rejected.',
+      error: (err) => err.message || 'Failed to reject post.',
+    })
+
     try {
-      await call('/api/reject', { postId, reason: reason || null })
+      await promise
       setRejectOpen(false)
       router.refresh()
     } catch (e) {
@@ -69,7 +88,11 @@ export function ApproveRejectButtons({
     <div className="flex flex-col gap-2">
       <div className="flex gap-2">
         <Button onClick={handleApprove} disabled={loading !== null}>
-          <Check className="mr-2 h-4 w-4" />
+          {loading === 'approve' ? (
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          ) : (
+            <Check className="mr-2 h-4 w-4" />
+          )}
           {loading === 'approve' ? 'Approving…' : 'Approve'}
         </Button>
         <Button
@@ -103,6 +126,9 @@ export function ApproveRejectButtons({
               onClick={handleReject}
               disabled={loading === 'reject'}
             >
+              {loading === 'reject' ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : null}
               {loading === 'reject' ? 'Rejecting…' : 'Reject post'}
             </Button>
           </DialogFooter>

@@ -105,14 +105,63 @@ async function publishPost(opts: {
 }
 
 Deno.serve(async (_req) => {
-  const now = new Date().toISOString()
+  const now = new Date()
+  const nowStr = now.toISOString()
+
+  // Daily alert check for expiring LinkedIn tokens (around 09:00 UTC)
+  const currentHour = now.getUTCHours()
+  const currentMinute = now.getUTCMinutes()
+  if (currentHour === 9 && currentMinute < 15) {
+    try {
+      const { data: clients } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('is_active', true)
+
+      for (const client of clients ?? []) {
+        if (client.linkedin_token_expires_at) {
+          const expiresAt = new Date(client.linkedin_token_expires_at)
+          const diffTime = expiresAt.getTime() - now.getTime()
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
+
+          if (diffDays <= 7 && diffDays > 0) {
+            const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN')
+            if (botToken && client.telegram_chat_id) {
+              const escapeHtml = (str: string) =>
+                str
+                  .replace(/&/g, '&amp;')
+                  .replace(/</g, '&lt;')
+                  .replace(/>/g, '&gt;')
+                  .replace(/"/g, '&quot;')
+                  .replace(/'/g, '&#039;')
+
+              const appUrl = Deno.env.get('NEXT_PUBLIC_APP_URL') || 'https://socialigent.vercel.app'
+              const text = `⚠️ <b>LinkedIn Token Expiring Soon</b> for client <b>${escapeHtml(client.name)}</b>.\n\nExpires in <b>${diffDays} day${diffDays !== 1 ? 's' : ''}</b>.\n\n👉 <a href="${appUrl}/api/linkedin/oauth?clientId=${client.id}">Click here to Reconnect</a>`
+
+              await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: client.telegram_chat_id,
+                  text,
+                  parse_mode: 'HTML',
+                }),
+              })
+            }
+          }
+        }
+      }
+    } catch (tokenErr) {
+      console.error('Failed to run token expiry check:', tokenErr)
+    }
+  }
 
   // Fetch approved posts that are due
   const { data: posts, error } = await supabase
     .from('posts')
     .select('*, clients(*)')
     .eq('status', 'approved')
-    .lte('scheduled_at', now)
+    .lte('scheduled_at', nowStr)
     .order('scheduled_at', { ascending: true })
     .limit(10)
 
@@ -189,6 +238,37 @@ Deno.serve(async (_req) => {
         changed_by: 'edge_function:publish-posts',
         note: message,
       })
+
+      // Notify via Telegram if configured
+      if (client?.telegram_chat_id) {
+        const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN')
+        if (botToken) {
+          try {
+            const escapeHtml = (str: string) =>
+              str
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;')
+
+            const appUrl = Deno.env.get('NEXT_PUBLIC_APP_URL') || 'https://socialigent.vercel.app'
+            const text = `⚠️ <b>Failed to publish post</b> for client <b>${escapeHtml(client.name)}</b>.\n\n<b>Error:</b> ${escapeHtml(message)}\n\n👉 <a href="${appUrl}/posts/${post.id}">View Post Details</a>`
+
+            await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: client.telegram_chat_id,
+                text,
+                parse_mode: 'HTML',
+              }),
+            })
+          } catch (teleErr) {
+            console.error('Failed to send Telegram failure notification:', teleErr)
+          }
+        }
+      }
 
       results.push({ postId: post.id, status: `failed: ${message}` })
     }

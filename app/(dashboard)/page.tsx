@@ -3,6 +3,7 @@ import { Users, FileText, Clock, CheckCircle } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
+import { AnalyticsChart } from '@/components/dashboard/AnalyticsChart'
 import type { Post, Client } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -51,6 +52,8 @@ export default async function DashboardPage() {
           </Card>
         ))}
       </div>
+
+      <AnalyticsChart posts={allPosts} />
 
       {pending.length > 0 && (
         <Card>
