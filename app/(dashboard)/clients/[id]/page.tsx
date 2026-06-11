@@ -88,15 +88,14 @@ export default async function ClientDetailPage({
               <span className="flex items-center gap-2">
                 <Globe className="h-4 w-4" /> LinkedIn
               </span>
-              {client.linkedin_access_token ? (
-                <Badge variant="default">Connected</Badge>
-              ) : (
+              <span className="flex items-center gap-2">
+                {client.linkedin_access_token && <Badge variant="default">Connected</Badge>}
                 <Button size="sm" variant="outline" asChild>
                   <Link href={`/api/linkedin/oauth?clientId=${client.id}`}>
-                    Connect
+                    {client.linkedin_access_token ? 'Reconnect' : 'Connect'}
                   </Link>
                 </Button>
-              )}
+              </span>
             </div>
             {client.linkedin_token_expires_at && (() => {
               const exp = new Date(client.linkedin_token_expires_at)
