@@ -18,13 +18,17 @@ async function liPost(url: string, token: string, body: unknown) {
   return res
 }
 
-async function registerImageUpload(pageId: string, token: string): Promise<{ uploadUrl: string; assetUrn: string }> {
+function isAccessDenied(err: unknown): boolean {
+  return err instanceof Error && (err.message.includes('ACCESS_DENIED') || err.message.includes('403'))
+}
+
+async function registerImageUpload(authorUrn: string, token: string): Promise<{ uploadUrl: string; assetUrn: string }> {
   const res = await liPost(
     'https://api.linkedin.com/v2/assets?action=registerUpload',
     token,
     {
       registerUploadRequest: {
-        owner: `urn:li:organization:${pageId}`,
+        owner: authorUrn,
         recipes: ['urn:li:digitalmediaRecipe:feedshare-image'],
         serviceRelationships: [
           {
@@ -61,24 +65,15 @@ async function uploadImageBinary(uploadUrl: string, token: string, imageBuffer: 
   }
 }
 
-export async function publishLinkedInPost(opts: {
-  pageId: string
-  token: string
-  caption: string
-  imageUrl: string | null
-}): Promise<string> {
-  const { pageId, token, caption, imageUrl } = opts
-  const author = `urn:li:organization:${pageId}`
-
+async function publishAs(authorUrn: string, token: string, caption: string, imageUrl: string | null): Promise<string> {
   let media: unknown[] = []
 
   if (imageUrl) {
-    // Download image from Supabase Storage
     const imgRes = await fetch(imageUrl)
     if (!imgRes.ok) throw new Error('Failed to fetch image for LinkedIn upload')
     const buffer = await imgRes.arrayBuffer()
 
-    const { uploadUrl, assetUrn } = await registerImageUpload(pageId, token)
+    const { uploadUrl, assetUrn } = await registerImageUpload(authorUrn, token)
     await uploadImageBinary(uploadUrl, token, buffer)
 
     media = [
@@ -104,7 +99,7 @@ export async function publishLinkedInPost(opts: {
         }
 
   const res = await liPost('https://api.linkedin.com/v2/ugcPosts', token, {
-    author,
+    author: authorUrn,
     lifecycleState: 'PUBLISHED',
     specificContent: {
       'com.linkedin.ugc.ShareContent': shareContent,
@@ -114,6 +109,35 @@ export async function publishLinkedInPost(opts: {
     },
   })
 
-  const location = res.headers.get('x-restli-id') ?? res.headers.get('location') ?? ''
-  return location
+  return res.headers.get('x-restli-id') ?? res.headers.get('location') ?? ''
+}
+
+// Tries to post as the Company Page first; if the token lacks page permissions
+// (w_organization_social requires LinkedIn approval), falls back to posting as
+// the connected member's personal profile.
+export async function publishLinkedInPost(opts: {
+  pageId: string | null
+  personId: string | null
+  token: string
+  caption: string
+  imageUrl: string | null
+}): Promise<{ postId: string; postedAs: 'organization' | 'person' }> {
+  const { pageId, personId, token, caption, imageUrl } = opts
+
+  if (pageId) {
+    try {
+      const postId = await publishAs(`urn:li:organization:${pageId}`, token, caption, imageUrl)
+      return { postId, postedAs: 'organization' }
+    } catch (err) {
+      if (!isAccessDenied(err) || !personId) throw err
+      // fall through to personal profile
+    }
+  }
+
+  if (!personId) {
+    throw new Error('No LinkedIn author available: page posting denied and no person ID stored. Reconnect LinkedIn.')
+  }
+
+  const postId = await publishAs(`urn:li:person:${personId}`, token, caption, imageUrl)
+  return { postId, postedAs: 'person' }
 }

@@ -11,6 +11,7 @@ export interface Client {
   brand_voice: string
   content_pillars: string[]
   linkedin_page_id: string | null
+  linkedin_person_id: string | null
   linkedin_access_token: string | null
   linkedin_token_expires_at: string | null
   telegram_chat_id: string | null

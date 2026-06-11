@@ -11,7 +11,7 @@ const supabase = createClient(
 const LI_VERSION = '202501'
 
 async function registerImageUpload(
-  pageId: string,
+  authorUrn: string,
   token: string,
 ): Promise<{ uploadUrl: string; assetUrn: string }> {
   const res = await fetch('https://api.linkedin.com/v2/assets?action=registerUpload', {
@@ -24,7 +24,7 @@ async function registerImageUpload(
     },
     body: JSON.stringify({
       registerUploadRequest: {
-        owner: `urn:li:organization:${pageId}`,
+        owner: authorUrn,
         recipes: ['urn:li:digitalmediaRecipe:feedshare-image'],
         serviceRelationships: [{ identifier: 'urn:li:userGeneratedContent', relationshipType: 'OWNER' }],
         supportedUploadMechanism: ['SYNCHRONOUS_UPLOAD'],
@@ -37,14 +37,7 @@ async function registerImageUpload(
   return { uploadUrl: mech.uploadUrl, assetUrn: json.value.asset }
 }
 
-async function publishPost(opts: {
-  pageId: string
-  token: string
-  caption: string
-  imageUrl: string | null
-}): Promise<string> {
-  const { pageId, token, caption, imageUrl } = opts
-  const author = `urn:li:organization:${pageId}`
+async function publishAs(authorUrn: string, token: string, caption: string, imageUrl: string | null): Promise<string> {
   let media: unknown[] = []
 
   if (imageUrl) {
@@ -52,7 +45,7 @@ async function publishPost(opts: {
     if (!imgRes.ok) throw new Error('Failed to fetch post image')
     const buffer = await imgRes.arrayBuffer()
 
-    const { uploadUrl, assetUrn } = await registerImageUpload(pageId, token)
+    const { uploadUrl, assetUrn } = await registerImageUpload(authorUrn, token)
     await fetch(uploadUrl, {
       method: 'PUT',
       headers: {
@@ -78,7 +71,7 @@ async function publishPost(opts: {
       'X-Restli-Protocol-Version': '2.0.0',
     },
     body: JSON.stringify({
-      author,
+      author: authorUrn,
       lifecycleState: 'PUBLISHED',
       specificContent: { 'com.linkedin.ugc.ShareContent': shareContent },
       visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' },
@@ -86,6 +79,29 @@ async function publishPost(opts: {
   })
   if (!res.ok) throw new Error(`LinkedIn publish failed: ${await res.text()}`)
   return res.headers.get('x-restli-id') ?? res.headers.get('location') ?? ''
+}
+
+// Page first, personal profile as fallback (page posting needs LinkedIn approval).
+async function publishPost(opts: {
+  pageId: string | null
+  personId: string | null
+  token: string
+  caption: string
+  imageUrl: string | null
+}): Promise<string> {
+  const { pageId, personId, token, caption, imageUrl } = opts
+
+  if (pageId) {
+    try {
+      return await publishAs(`urn:li:organization:${pageId}`, token, caption, imageUrl)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (!(msg.includes('ACCESS_DENIED') || msg.includes('403')) || !personId) throw err
+    }
+  }
+
+  if (!personId) throw new Error('No LinkedIn author available. Reconnect LinkedIn.')
+  return await publishAs(`urn:li:person:${personId}`, token, caption, imageUrl)
 }
 
 Deno.serve(async (_req) => {
@@ -108,7 +124,7 @@ Deno.serve(async (_req) => {
 
   for (const post of posts ?? []) {
     const client = post.clients
-    if (!client?.linkedin_page_id || !client?.linkedin_access_token) {
+    if (!client?.linkedin_access_token || (!client?.linkedin_page_id && !client?.linkedin_person_id)) {
       results.push({ postId: post.id, status: 'skipped:no_linkedin' })
       continue
     }
@@ -133,6 +149,7 @@ Deno.serve(async (_req) => {
     try {
       const linkedInPostId = await publishPost({
         pageId: client.linkedin_page_id,
+        personId: client.linkedin_person_id,
         token: client.linkedin_access_token,
         caption: post.caption,
         imageUrl: post.image_url,

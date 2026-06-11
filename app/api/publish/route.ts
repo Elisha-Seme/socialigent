@@ -30,7 +30,7 @@ export async function POST(request: NextRequest) {
   }
 
   const client = post.clients
-  if (!client.linkedin_page_id || !client.linkedin_access_token) {
+  if (!client.linkedin_access_token || (!client.linkedin_page_id && !client.linkedin_person_id)) {
     return NextResponse.json({ error: 'Client LinkedIn not connected' }, { status: 400 })
   }
 
@@ -50,8 +50,9 @@ export async function POST(request: NextRequest) {
     .eq('status', 'approved')
 
   try {
-    const linkedInPostId = await publishLinkedInPost({
+    const { postId: linkedInPostId, postedAs } = await publishLinkedInPost({
       pageId: client.linkedin_page_id,
+      personId: client.linkedin_person_id,
       token: client.linkedin_access_token,
       caption: post.caption,
       imageUrl: post.image_url,
@@ -74,10 +75,10 @@ export async function POST(request: NextRequest) {
       previous_status: 'approved',
       new_status: 'published',
       changed_by: `user:${user.id}`,
-      note: `Published to LinkedIn page ${client.linkedin_page_id}`,
+      note: `Published to LinkedIn as ${postedAs === 'organization' ? `page ${client.linkedin_page_id}` : 'personal profile'}`,
     })
 
-    return NextResponse.json({ ok: true, linkedInPostId })
+    return NextResponse.json({ ok: true, linkedInPostId, postedAs })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error'
 

@@ -22,12 +22,28 @@ export async function GET(request: NextRequest) {
     const tokens = await exchangeCodeForToken(code)
     const expiresAt = new Date(Date.now() + tokens.expires_in * 1000).toISOString()
 
+    // Fetch the member's person ID — used as fallback author when the token
+    // lacks w_organization_social (page posting requires LinkedIn approval).
+    let personId: string | null = null
+    try {
+      const userinfoRes = await fetch('https://api.linkedin.com/v2/userinfo', {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+      })
+      if (userinfoRes.ok) {
+        const userinfo = await userinfoRes.json()
+        personId = userinfo.sub ?? null
+      }
+    } catch {
+      // non-fatal — page posting may still work
+    }
+
     const supabase = createAdminClient()
     const { error: updateError } = await supabase
       .from('clients')
       .update({
         linkedin_access_token: tokens.access_token,
         linkedin_token_expires_at: expiresAt,
+        linkedin_person_id: personId,
         updated_at: new Date().toISOString(),
       })
       .eq('id', parsed.clientId)
