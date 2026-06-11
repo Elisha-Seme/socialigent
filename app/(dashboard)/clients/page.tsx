@@ -8,7 +8,11 @@ import type { Client } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
-export default async function ClientsPage() {
+export default async function ClientsPage({
+  searchParams,
+}: {
+  searchParams: { linkedin_error?: string }
+}) {
   const supabase = await createClient()
   const { data } = await supabase
     .from('clients')
@@ -16,9 +20,15 @@ export default async function ClientsPage() {
     .order('created_at', { ascending: false })
 
   const clients = (data ?? []) as Client[]
+  const linkedinError = searchParams.linkedin_error
 
   return (
     <div className="space-y-6">
+      {linkedinError && (
+        <div className="rounded-md border border-destructive bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          LinkedIn error: {decodeURIComponent(linkedinError)}
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Clients</h1>
         <Button asChild>

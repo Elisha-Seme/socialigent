@@ -36,7 +36,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.redirect(`${appUrl}/clients/${parsed.clientId}?linkedin_connected=1`)
   } catch (err) {
-    console.error('LinkedIn callback error:', err)
-    return NextResponse.redirect(`${appUrl}/clients?linkedin_error=token_exchange_failed`)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error('LinkedIn callback error:', msg)
+    return NextResponse.redirect(`${appUrl}/clients?linkedin_error=${encodeURIComponent(msg)}`)
   }
 }
