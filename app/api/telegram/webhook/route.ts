@@ -2,7 +2,22 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { answerCallbackQuery } from '@/lib/telegram/bot'
 import { verifyWebhookSecret, parseCallbackData, type TelegramUpdate } from '@/lib/telegram/webhook'
-import type { Post } from '@/lib/types'
+import { saveTelegramPhoto, sendTyping, sendMessage } from '@/lib/telegram/photos'
+import { runAgent } from '@/lib/telegram/agent'
+import type { Client } from '@/lib/types'
+
+export const maxDuration = 60
+
+// Find which client owns this chat ID — the access control gate.
+async function findClientByChatId(chatId: string): Promise<Client | null> {
+  const supabase = createAdminClient()
+  const { data } = await supabase
+    .from('clients')
+    .select('*')
+    .eq('telegram_chat_id', chatId)
+    .single()
+  return (data as Client) ?? null
+}
 
 export async function POST(request: NextRequest) {
   if (!verifyWebhookSecret(request)) {
@@ -16,181 +31,156 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  // Handle message reply-to-edit
+  // ── 1. Callback query (inline button taps: approve / reject / edit) ─────────
+  const callbackQuery = update.callback_query
+  if (callbackQuery?.data) {
+    const parsed = parseCallbackData(callbackQuery.data)
+    if (!parsed) {
+      await answerCallbackQuery(callbackQuery.id, 'Unknown action')
+      return NextResponse.json({ ok: true })
+    }
+
+    const { action, postId } = parsed
+    const supabase = createAdminClient()
+
+    const { data: post } = await supabase
+      .from('posts')
+      .select('id, status, caption, client_id')
+      .eq('id', postId)
+      .single()
+
+    if (!post) {
+      await answerCallbackQuery(callbackQuery.id, 'Post not found')
+      return NextResponse.json({ ok: true })
+    }
+
+    if (action === 'edit') {
+      const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? 'https://socialigent.vercel.app').trim()
+      await answerCallbackQuery(callbackQuery.id, `Edit at: ${appUrl}/posts/${postId}`)
+      return NextResponse.json({ ok: true })
+    }
+
+    if (post.status !== 'pending_approval') {
+      await answerCallbackQuery(callbackQuery.id, `Post already ${post.status}`)
+      return NextResponse.json({ ok: true })
+    }
+
+    const newStatus = action === 'approve' ? 'approved' : 'rejected'
+    const changedBy = callbackQuery.from.username
+      ? `@${callbackQuery.from.username}`
+      : callbackQuery.from.first_name
+
+    await supabase
+      .from('posts')
+      .update({
+        status: newStatus,
+        ...(action === 'reject' ? { rejection_reason: `Rejected via Telegram by ${changedBy}` } : {}),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', postId)
+
+    await supabase.from('post_history').insert({
+      post_id: postId,
+      previous_status: post.status,
+      new_status: newStatus,
+      changed_by: `telegram:${changedBy}`,
+      note: `${action === 'approve' ? 'Approved' : 'Rejected'} via Telegram button`,
+    })
+
+    await answerCallbackQuery(
+      callbackQuery.id,
+      action === 'approve' ? '✅ Post approved!' : '❌ Post rejected.'
+    )
+    return NextResponse.json({ ok: true })
+  }
+
+  // ── 2. Regular messages ──────────────────────────────────────────────────────
   const message = update.message
-  if (message?.reply_to_message) {
-    const parentText = message.reply_to_message.text || message.reply_to_message.caption || ''
-    const match = parentText.match(/\/posts\/([a-f0-9-]{36})/)
-    if (match) {
-      const postId = match[1]
-      const supabase = createAdminClient()
+  if (!message) return NextResponse.json({ ok: true })
 
-      // Fetch the post
-      const { data: post, error: fetchError } = await supabase
-        .from('posts')
-        .select('id, status, caption, client_id')
-        .eq('id', postId)
-        .single()
+  const chatId = String(message.chat.id)
 
-      if (!fetchError && post && post.status === 'pending_approval') {
-        const newCaption = message.text?.trim()
-        if (newCaption) {
-          // Update post caption
-          const { error: updateError } = await supabase
+  // Access control — only registered chats get AI responses
+  const client = await findClientByChatId(chatId)
+  if (!client) {
+    // Send one polite rejection — don't respond to unknown chats again
+    await sendMessage(chatId, 'Sorry, this bot is private. Contact the operator to get access.')
+    return NextResponse.json({ ok: true })
+  }
+
+  // ── 2a. Reply-to-edit shortcut (fast path — no AI needed) ───────────────────
+  if (message.reply_to_message) {
+    const parentText =
+      message.reply_to_message.text ?? message.reply_to_message.caption ?? ''
+    const postIdMatch = parentText.match(/\/posts\/([a-f0-9-]{36})/)
+
+    if (postIdMatch) {
+      const postId = postIdMatch[1]
+      const newCaption = message.text?.trim()
+
+      if (newCaption) {
+        const supabase = createAdminClient()
+        const { data: post } = await supabase
+          .from('posts')
+          .select('id, status')
+          .eq('id', postId)
+          .single()
+
+        if (post?.status === 'pending_approval') {
+          await supabase
             .from('posts')
-            .update({
-              caption: newCaption,
-              updated_at: new Date().toISOString(),
-            })
+            .update({ caption: newCaption, updated_at: new Date().toISOString() })
             .eq('id', postId)
 
-          if (!updateError) {
-            const changedBy = message.from?.username
-              ? `@${message.from.username}`
-              : message.from?.first_name || 'Operator'
+          await supabase.from('post_history').insert({
+            post_id: postId,
+            previous_status: post.status,
+            new_status: post.status,
+            changed_by: `telegram:${message.from?.username ?? message.from?.first_name ?? 'user'}`,
+            note: `Caption edited via Telegram reply`,
+          })
 
-            await supabase.from('post_history').insert({
-              post_id: postId,
-              previous_status: post.status,
-              new_status: post.status,
-              changed_by: `telegram:${changedBy}`,
-              note: `Caption edited via Telegram reply:\n"${newCaption.slice(0, 100)}..."`,
-            })
-
-            const botToken = process.env.TELEGRAM_BOT_TOKEN
-            if (botToken) {
-              const { data: postWithClient } = await supabase
-                .from('posts')
-                .select('*, clients(name)')
-                .eq('id', postId)
-                .single()
-              
-              const clientName = (postWithClient as Post & { clients: { name: string } | null })?.clients?.name || 'client'
-              const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
-              const updatedText =
-                `📝 New post for ${clientName}\n\n` +
-                newCaption.slice(0, 900) +
-                `\n\n👉 ${appUrl}/posts/${post.id}`
-
-              const isPhoto = !!message.reply_to_message.caption
-              const method = isPhoto ? 'editMessageCaption' : 'editMessageText'
-
-              const replyMarkup = {
-                inline_keyboard: [
-                  [
-                    { text: '✅ Approve', callback_data: `approve:${post.id}` },
-                    { text: '❌ Reject', callback_data: `reject:${post.id}` },
-                    { text: '✏️ Edit', callback_data: `edit:${post.id}` },
-                  ],
-                ],
-              }
-
-              const body = isPhoto
-                ? {
-                    chat_id: message.chat.id,
-                    message_id: message.reply_to_message.message_id,
-                    caption: updatedText,
-                    reply_markup: replyMarkup,
-                  }
-                : {
-                    chat_id: message.chat.id,
-                    message_id: message.reply_to_message.message_id,
-                    text: updatedText,
-                    reply_markup: replyMarkup,
-                  }
-
-              await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-              }).catch(() => {})
-
-              await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: message.chat.id,
-                  text: `✅ Caption updated successfully!`,
-                  reply_to_message_id: message.message_id,
-                }),
-              }).catch(() => {})
-            }
-          }
+          await sendMessage(chatId, '✅ Caption updated!')
+          return NextResponse.json({ ok: true })
         }
       }
-      return NextResponse.json({ ok: true })
+      // If not a pending post or no text, fall through to agent
     }
   }
 
-  const callbackQuery = update.callback_query
-  if (!callbackQuery?.data) {
-    // Not a callback we care about — acknowledge silently
-    return NextResponse.json({ ok: true })
+  // ── 2b. AI agent — handles photos, text, and everything else ────────────────
+  const isPhoto = !!message.photo?.length
+  const hasText = !!(message.text ?? message.caption)
+
+  // Ignore unsupported types (stickers, voice, etc.)
+  if (!isPhoto && !hasText) return NextResponse.json({ ok: true })
+
+  // Signal to the user that we're working
+  await sendTyping(chatId)
+
+  // If a photo was sent, upload it to Storage first
+  let imageUrl: string | undefined
+  if (isPhoto && message.photo) {
+    // Telegram provides multiple sizes; last entry is highest resolution
+    const largest = message.photo[message.photo.length - 1]
+    const uploaded = await saveTelegramPhoto(largest.file_id, client.id)
+    imageUrl = uploaded ?? undefined
   }
 
-  const parsed = parseCallbackData(callbackQuery.data)
-  if (!parsed) {
-    await answerCallbackQuery(callbackQuery.id, 'Unknown action')
-    return NextResponse.json({ ok: true })
-  }
+  const userText = (message.text ?? message.caption ?? '').trim()
 
-  const { action, postId } = parsed
-  const supabase = createAdminClient()
-
-  // Fetch post to validate it exists and is in pending_approval
-  const { data: post, error: fetchError } = await supabase
-    .from('posts')
-    .select('id, status, caption, client_id')
-    .eq('id', postId)
-    .single()
-
-  if (fetchError || !post) {
-    await answerCallbackQuery(callbackQuery.id, 'Post not found')
-    return NextResponse.json({ ok: true })
-  }
-
-  if (action === 'edit') {
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
-    await answerCallbackQuery(callbackQuery.id, `Edit at: ${appUrl}/posts/${postId}`)
-    return NextResponse.json({ ok: true })
-  }
-
-  if (post.status !== 'pending_approval') {
-    await answerCallbackQuery(callbackQuery.id, `Post already ${post.status}`)
-    return NextResponse.json({ ok: true })
-  }
-
-  const newStatus = action === 'approve' ? 'approved' : 'rejected'
-  const changedBy = callbackQuery.from.username
-    ? `@${callbackQuery.from.username}`
-    : callbackQuery.from.first_name
-
-  // Update post status
-  const { error: updateError } = await supabase
-    .from('posts')
-    .update({
-      status: newStatus,
-      ...(action === 'reject' ? { rejection_reason: `Rejected via Telegram by ${changedBy}` } : {}),
-      updated_at: new Date().toISOString(),
+  try {
+    const reply = await runAgent({
+      chatId,
+      client,
+      userMessage: userText || (isPhoto ? '(photo)' : ''),
+      imageUrl,
     })
-    .eq('id', postId)
-
-  if (updateError) {
-    await answerCallbackQuery(callbackQuery.id, 'Failed to update post')
-    return NextResponse.json({ ok: true })
+    await sendMessage(chatId, reply)
+  } catch (err) {
+    console.error('Agent error:', err)
+    await sendMessage(chatId, 'Sorry, something went wrong on my end. Please try again.')
   }
-
-  // Record history
-  await supabase.from('post_history').insert({
-    post_id: postId,
-    previous_status: post.status,
-    new_status: newStatus,
-    changed_by: `telegram:${changedBy}`,
-    note: `${action === 'approve' ? 'Approved' : 'Rejected'} via Telegram`,
-  })
-
-  const confirmText = action === 'approve' ? '✅ Post approved!' : '❌ Post rejected.'
-  await answerCallbackQuery(callbackQuery.id, confirmText)
 
   return NextResponse.json({ ok: true })
 }

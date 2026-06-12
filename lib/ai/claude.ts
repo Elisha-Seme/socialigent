@@ -10,7 +10,8 @@ export interface GeneratedContent {
 export async function generatePostContent(
   client: Client,
   rejectionReason?: string | null,
-  recentCaptions?: string[] | null
+  recentCaptions?: string[] | null,
+  topic?: string | null
 ): Promise<GeneratedContent> {
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
@@ -30,7 +31,7 @@ export async function generatePostContent(
 
 Brand: ${client.name}
 Brand voice: ${client.brand_voice}
-Content pillars: ${pillars}
+Content pillars: ${pillars}${topic ? `\nSPECIFIC TOPIC / INSTRUCTIONS: ${topic}` : ''}
 ${
   rejectionReason
     ? `\nCRITICAL FEEDBACK: A previous draft of this post was REJECTED for the following reason:\n"${rejectionReason}"\nMake sure to address this feedback and rewrite the captions accordingly.\n`
