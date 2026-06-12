@@ -5,6 +5,86 @@ import type { Client } from '@/lib/types'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 
+// ─── History compaction ──────────────────────────────────────────────────────
+// Triggered when estimated token count of stored history exceeds COMPACT_THRESHOLD.
+// Older messages are summarised into a single compact note, then deleted.
+// The summary is stored with a '[SUMMARY]' prefix so the loader can inject it
+// into the system prompt rather than the messages array (avoids role ordering issues).
+
+const COMPACT_THRESHOLD_TOKENS = 3000  // ~12 000 chars estimated
+const KEEP_RECENT_COUNT = 10           // always keep the N most recent messages
+const CHARS_PER_TOKEN = 4              // rough estimate
+
+async function compactHistoryIfNeeded(chatId: string): Promise<void> {
+  const supabase = createAdminClient()
+
+  const { data: allMessages } = await supabase
+    .from('telegram_messages')
+    .select('id, role, content, created_at')
+    .eq('chat_id', chatId)
+    .order('created_at', { ascending: true })
+
+  if (!allMessages || allMessages.length <= KEEP_RECENT_COUNT) return
+
+  // Estimate total tokens (skip existing summary lines — already compact)
+  const totalChars = allMessages.reduce((sum, m) =>
+    m.content.startsWith('[SUMMARY]') ? sum : sum + m.content.length, 0)
+  const estimatedTokens = totalChars / CHARS_PER_TOKEN
+
+  if (estimatedTokens <= COMPACT_THRESHOLD_TOKENS) return
+
+  // Split: messages to compress vs. recent tail to keep
+  const toCompress = allMessages.filter(m => !m.content.startsWith('[SUMMARY]'))
+    .slice(0, -KEEP_RECENT_COUNT)
+  if (toCompress.length === 0) return
+
+  // Ask Claude Haiku to summarise the older portion
+  const transcript = toCompress
+    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+    .join('\n')
+
+  let summaryText = ''
+  try {
+    const result = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 300,
+      messages: [{
+        role: 'user',
+        content:
+          'Summarise the following conversation in 100–150 words. ' +
+          'Preserve key decisions, any post IDs or actions taken, and important context. ' +
+          'Write in third person, past tense.\n\n' + transcript,
+      }],
+    })
+    summaryText = result.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map(b => b.text)
+      .join('')
+      .trim()
+  } catch {
+    // Summarisation failed — fall back to hard delete without a summary
+  }
+
+  // Delete the old messages
+  const idsToDelete = toCompress.map(m => m.id)
+  await supabase.from('telegram_messages').delete().in('id', idsToDelete)
+
+  // Insert the compact summary (placed just before the kept tail)
+  if (summaryText) {
+    const oldestKeptTime = allMessages[allMessages.length - KEEP_RECENT_COUNT]?.created_at
+    const summaryTime = oldestKeptTime
+      ? new Date(new Date(oldestKeptTime).getTime() - 1000).toISOString()
+      : new Date().toISOString()
+
+    await supabase.from('telegram_messages').insert({
+      chat_id: chatId,
+      role: 'user',
+      content: `[SUMMARY] ${summaryText}`,
+      created_at: summaryTime,
+    })
+  }
+}
+
 // ─── Tool definitions ────────────────────────────────────────────────────────
 
 const TOOLS: Anthropic.Tool[] = [
@@ -239,15 +319,27 @@ export async function runAgent(opts: {
   const { chatId, client, userMessage, imageUrl } = opts
   const supabase = createAdminClient()
 
-  // Load last 10 messages for this chat (conversation memory)
+  // Compact history if it has grown too large (summarises + deletes old messages)
+  await compactHistoryIfNeeded(chatId)
+
+  // Load recent history — pick up summary entry + last KEEP_RECENT_COUNT messages
   const { data: history } = await supabase
     .from('telegram_messages')
     .select('role, content')
     .eq('chat_id', chatId)
-    .order('created_at', { ascending: false })
-    .limit(10)
+    .order('created_at', { ascending: true })
+    .limit(KEEP_RECENT_COUNT + 2) // +2 to catch any summary entry
 
-  const recentHistory = (history ?? []).reverse()
+  // Separate summary (injected into system prompt) from real conversation messages
+  let conversationSummary = ''
+  const recentHistory: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  for (const msg of history ?? []) {
+    if (msg.content.startsWith('[SUMMARY]')) {
+      conversationSummary = msg.content.replace('[SUMMARY]', '').trim()
+    } else {
+      recentHistory.push({ role: msg.role as 'user' | 'assistant', content: msg.content })
+    }
+  }
 
   // Persist incoming user message
   const userContent = imageUrl
@@ -279,7 +371,11 @@ Your role:
 - Be warm, concise, and practical — keep replies under 250 words unless listing posts
 
 Post IDs: when referencing a post, use only the first 8 characters for readability (e.g. "abc12345…").
-Current time (UTC): ${new Date().toISOString()}`
+Current time (UTC): ${new Date().toISOString()}${
+    conversationSummary
+      ? `\n\nEarlier conversation (summarised to save context):\n${conversationSummary}`
+      : ''
+  }`
 
   // Build message list for Claude
   const messages: Anthropic.MessageParam[] = [
