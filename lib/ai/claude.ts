@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { HUMAN_WRITING_RULES, stripAiMarkers } from '@/lib/ai/style'
 import type { Client } from '@/lib/types'
 
 export interface GeneratedContent {
@@ -45,8 +46,9 @@ ${
     : ''
 }
 Requirements:
-- caption1, caption2, caption3: three distinct LinkedIn-formatted captions, max 1200 characters, ends with 3-5 relevant hashtags. Use short paragraphs and a hook in the first line. No emojis overload (max 2-3).
+- caption1, caption2, caption3: three distinct LinkedIn-formatted captions, max 1200 characters. Use short paragraphs and a strong concrete first line.
 - imagePrompt: a detailed DALL-E prompt for a professional landscape image to accompany the post. No text in the image. No brand logos.
+${HUMAN_WRITING_RULES}
 
 Respond with JSON only: {"caption1": "...", "caption2": "...", "caption3": "...", "imagePrompt": "..."}`,
       },
@@ -71,9 +73,12 @@ Respond with JSON only: {"caption1": "...", "caption2": "...", "caption3": "..."
     throw new Error('Claude returned malformed content')
   }
 
+  // Deterministic cleanup — models still slip em dashes / smart quotes in
+  const captions = [parsed.caption1, parsed.caption2, parsed.caption3].map(stripAiMarkers)
+
   return {
-    caption: parsed.caption1,
+    caption: captions[0],
     imagePrompt: parsed.imagePrompt,
-    captionVariations: [parsed.caption1, parsed.caption2, parsed.caption3],
+    captionVariations: captions,
   }
 }

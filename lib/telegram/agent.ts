@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { generateAndQueuePost } from '@/lib/ai/pipeline'
+import { HUMAN_WRITING_RULES, stripAiMarkers } from '@/lib/ai/style'
 import type { Client } from '@/lib/types'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -231,7 +232,7 @@ async function executeTool(
     case 'update_caption': {
       const { error } = await supabase
         .from('posts')
-        .update({ caption: input.new_caption, updated_at: new Date().toISOString() })
+        .update({ caption: stripAiMarkers(input.new_caption), updated_at: new Date().toISOString() })
         .eq('id', input.post_id)
         .eq('client_id', client.id)
         .in('status', ['pending_approval', 'draft'])
@@ -369,6 +370,9 @@ Your role:
 - List, approve, reject, or reschedule posts
 - Answer social media strategy questions in the client's brand voice
 - Be warm, concise, and practical — keep replies under 250 words unless listing posts
+
+When you write or rewrite a caption yourself (update_caption), it must sound like a real person typed it. Apply these rules to caption text:
+${HUMAN_WRITING_RULES}
 
 Post IDs: when referencing a post, use only the first 8 characters for readability (e.g. "abc12345…").
 Current time (UTC): ${new Date().toISOString()}${

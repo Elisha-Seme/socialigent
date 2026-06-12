@@ -64,7 +64,7 @@ export default async function CalendarPage({
     .order('scheduled_at', { ascending: true })
     .limit(300)
 
-  const posts = (rawPosts ?? []) as PostRow[]
+  const posts = (rawPosts ?? []) as unknown as PostRow[]
 
   // Group posts by calendar day number
   const postsByDay: Record<number, PostRow[]> = {}

@@ -18,6 +18,37 @@ const openai = Deno.env.get('OPENAI_API_KEY')
 
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
 
+// Keep in sync with lib/ai/style.ts (this Deno function can't import from lib/)
+const HUMAN_WRITING_RULES = `
+WRITING STYLE — the post must read like a busy professional typed it themselves, not like AI. Follow ALL of these:
+- NEVER use em dashes (—) or en dashes (–). Use a comma, a period, or a plain hyphen instead.
+- Banned words/phrases: delve, unlock, unleash, leverage, elevate, empower, harness, foster, robust, seamless, game-changer, game changing, cutting-edge, transformative, revolutionize, navigate the landscape, in today's fast-paced world, in the ever-evolving, look no further, dive in, let's explore, here's the thing, let that sink in, read that again, the best part?, but here's the kicker.
+- NEVER use the "It's not just X, it's Y" or "X isn't about Y. It's about Z." sentence pattern.
+- No rhetorical-question hooks ("Ever wondered...?", "What if I told you...?"). Open with a concrete statement, observation, or short story instead.
+- No engagement bait endings: no "Thoughts?", "Agree?", "Let me know in the comments", "Drop a 👇". End with a plain takeaway or a genuine, specific question.
+- No emoji bullet lists (🚀 ✅ 💡 as bullets). At most 1 emoji in the whole post, or none.
+- No "Punchy. One. Word. Sentences." and no three-part slogan patterns ("Faster. Smarter. Better.").
+- Vary sentence length naturally. Use contractions (it's, don't, we're). Plain everyday words over corporate vocabulary.
+- Be specific and concrete: real situations, numbers, examples. Cut empty filler sentences that could apply to any company.
+- Hashtags: 2-3 maximum, specific to the topic (not #Success #Motivation #Growth), placed on the last line.`
+
+const MARKER_REPLACEMENTS: Array<[RegExp, string]> = [
+  [/\s*—\s*/g, ' - '],
+  [/(?<=\d)\s*–\s*(?=\d)/g, '-'],
+  [/\s*–\s*/g, ' - '],
+  [/[“”]/g, '"'],
+  [/[‘’]/g, "'"],
+  [/…/g, '...'],
+]
+
+function stripAiMarkers(text: string): string {
+  let out = text
+  for (const [pattern, replacement] of MARKER_REPLACEMENTS) {
+    out = out.replace(pattern, replacement)
+  }
+  return out
+}
+
 function nextSlotDate(schedule: Array<{ day: string; time: string }>, from: Date): Date | null {
   if (!schedule.length) return null
   const fromDay = from.getDay()
@@ -104,6 +135,7 @@ Deno.serve(async (_req) => {
 Brand: ${client.name}
 Voice: ${client.brand_voice}
 Content pillars: ${(client.content_pillars ?? []).join(', ')}${dupeGuard}
+${HUMAN_WRITING_RULES}
 
 Respond ONLY with a JSON object like this (no markdown fences):
 {"caption":"...","imagePrompt":"..."}`
@@ -119,7 +151,7 @@ Respond ONLY with a JSON object like this (no markdown fences):
       const raw = msg.content[0].type === 'text' ? msg.content[0].text : ''
       const cleaned = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
       const parsed = JSON.parse(cleaned)
-      caption = parsed.caption ?? ''
+      caption = stripAiMarkers(parsed.caption ?? '')
       imagePrompt = parsed.imagePrompt ?? ''
     } catch (err) {
       results.push({ clientId: client.id, status: `claude_error: ${err}` })
