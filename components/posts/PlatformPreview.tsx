@@ -96,7 +96,7 @@ function PostImage({ imageUrl, rounded }: { imageUrl: string; rounded?: boolean 
         src={imageUrl}
         alt="Post image"
         fill
-        sizes="(max-width: 768px) 100vw, 672px"
+        sizes="(max-width: 640px) 100vw, 390px"
         className="object-cover"
       />
     </div>
@@ -334,13 +334,16 @@ export function PlatformPreview({
         </span>
       </div>
 
-      {platform === 'linkedin' && (
-        <LinkedInMock name={clientName} caption={caption} imageUrl={imageUrl} />
-      )}
-      {platform === 'facebook' && (
-        <FacebookMock name={clientName} caption={caption} imageUrl={imageUrl} />
-      )}
-      {platform === 'x' && <XMock name={clientName} caption={caption} imageUrl={imageUrl} />}
+      {/* Phone-width on larger screens so the mock matches a real feed */}
+      <div className="mx-auto w-full sm:max-w-[390px]">
+        {platform === 'linkedin' && (
+          <LinkedInMock name={clientName} caption={caption} imageUrl={imageUrl} />
+        )}
+        {platform === 'facebook' && (
+          <FacebookMock name={clientName} caption={caption} imageUrl={imageUrl} />
+        )}
+        {platform === 'x' && <XMock name={clientName} caption={caption} imageUrl={imageUrl} />}
+      </div>
     </div>
   )
 }
