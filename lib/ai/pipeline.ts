@@ -15,8 +15,9 @@ export async function generateAndQueuePost(opts: {
   topic?: string          // specific topic/instructions to guide Claude
   imageUrl?: string       // pre-uploaded image — skips DALL-E when provided
   suppressTelegram?: boolean
+  scheduledAt?: string    // ISO datetime override — skips the schedule-slot lookup
 }): Promise<Post> {
-  const { client, topic, suppressTelegram = false } = opts
+  const { client, topic, suppressTelegram = false, scheduledAt } = opts
   let { imageUrl } = opts
 
   const supabase = createAdminClient()
@@ -60,7 +61,7 @@ export async function generateAndQueuePost(opts: {
       image_url: imageUrl ?? null,
       platform: 'linkedin',
       status: 'pending_approval',
-      scheduled_at: nextSlotDate(client.posting_schedule)?.toISOString() ?? null,
+      scheduled_at: scheduledAt ?? nextSlotDate(client.posting_schedule)?.toISOString() ?? null,
       error_message: imageError,
     })
     .select()
