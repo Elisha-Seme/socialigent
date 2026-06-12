@@ -4,18 +4,7 @@ import { answerCallbackQuery } from '@/lib/telegram/bot'
 import { verifyWebhookSecret, parseCallbackData, type TelegramUpdate } from '@/lib/telegram/webhook'
 import { saveTelegramPhoto, sendTyping, sendMessage } from '@/lib/telegram/photos'
 import { runAgent } from '@/lib/telegram/agent'
-import { generateAndQueuePost } from '@/lib/ai/pipeline'
 import type { Client } from '@/lib/types'
-
-const REGEN_KEYWORDS = [
-  'try again', 'regenerate', 'redo', 'new version', 'different', 'rewrite',
-  'another one', 'remix', 'change it', 'try something else', 'start over',
-]
-
-function isRegenRequest(text: string): boolean {
-  const lower = text.toLowerCase()
-  return REGEN_KEYWORDS.some(k => lower.includes(k))
-}
 
 export const maxDuration = 60
 
@@ -119,88 +108,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true })
   }
 
-  // ── 2a. Reply-to-post shortcut (fast path — edit or regenerate) ─────────────
+  // ── 2a. Replies to a post message — tag the post ID so the agent knows the
+  // target and can decide what the user wants (publish, edit, regen, etc.) ────
+  let replyPostId: string | null = null
   if (message.reply_to_message) {
     const parentText =
       message.reply_to_message.text ?? message.reply_to_message.caption ?? ''
     const postIdMatch = parentText.match(/\/posts\/([a-f0-9-]{36})/)
-
-    if (postIdMatch) {
-      const postId = postIdMatch[1]
-      const newText = message.text?.trim()
-
-      if (newText) {
-        const supabase = createAdminClient()
-        const { data: post } = await supabase
-          .from('posts')
-          .select('id, status')
-          .eq('id', postId)
-          .single()
-
-        if (post) {
-          const changedBy = `telegram:${message.from?.username ?? message.from?.first_name ?? 'user'}`
-
-          // Regenerate path: reply contains regeneration keywords
-          if (isRegenRequest(newText)) {
-            await sendTyping(chatId)
-
-            // Reject the old post with the feedback as reason (if still pending)
-            if (post.status === 'pending_approval') {
-              await supabase
-                .from('posts')
-                .update({ status: 'rejected', rejection_reason: newText, updated_at: new Date().toISOString() })
-                .eq('id', postId)
-
-              await supabase.from('post_history').insert({
-                post_id: postId,
-                previous_status: post.status,
-                new_status: 'rejected',
-                changed_by: changedBy,
-                note: `Rejected for regeneration: "${newText}"`,
-              })
-            }
-
-            try {
-              const newPost = await generateAndQueuePost({
-                client,
-                topic: newText,
-                suppressTelegram: false,
-              })
-              await sendMessage(
-                chatId,
-                `🔄 Regenerated! New draft created (ID: ${newPost.id.slice(0, 8)}…)\n\nAn approval message has been sent.`,
-              )
-            } catch (err) {
-              await sendMessage(
-                chatId,
-                `❌ Regeneration failed: ${err instanceof Error ? err.message : 'unknown error'}`,
-              )
-            }
-            return NextResponse.json({ ok: true })
-          }
-
-          // Edit path: update caption in-place
-          if (post.status === 'pending_approval') {
-            await supabase
-              .from('posts')
-              .update({ caption: newText, updated_at: new Date().toISOString() })
-              .eq('id', postId)
-
-            await supabase.from('post_history').insert({
-              post_id: postId,
-              previous_status: post.status,
-              new_status: post.status,
-              changed_by: changedBy,
-              note: `Caption edited via Telegram reply`,
-            })
-
-            await sendMessage(chatId, '✅ Caption updated!')
-            return NextResponse.json({ ok: true })
-          }
-        }
-      }
-      // No text or post not pending — fall through to agent
-    }
+    if (postIdMatch) replyPostId = postIdMatch[1]
   }
 
   // ── 2b. AI agent — handles photos, text, and everything else ────────────────
@@ -223,12 +138,16 @@ export async function POST(request: NextRequest) {
   }
 
   const userText = (message.text ?? message.caption ?? '').trim()
+  const baseMessage = userText || (isPhoto ? '(photo)' : '')
+  const annotated = replyPostId
+    ? `[Replying to post ${replyPostId}] ${baseMessage}`
+    : baseMessage
 
   try {
     const reply = await runAgent({
       chatId,
       client,
-      userMessage: userText || (isPhoto ? '(photo)' : ''),
+      userMessage: annotated,
       imageUrl,
     })
     await sendMessage(chatId, reply)

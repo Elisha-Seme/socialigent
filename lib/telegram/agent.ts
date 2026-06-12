@@ -139,6 +139,19 @@ const TOOLS: Anthropic.Tool[] = [
     },
   },
   {
+    name: 'get_post',
+    description:
+      'Fetch the full caption, status, and schedule of a specific post. ' +
+      'Use this before rewriting a caption or when the user asks what a post says.',
+    input_schema: {
+      type: 'object' as const,
+      required: ['post_id'],
+      properties: {
+        post_id: { type: 'string', description: 'Post ID (full UUID or the first 8 characters)' },
+      },
+    },
+  },
+  {
     name: 'update_caption',
     description: 'Replace the caption of a specific pending post.',
     input_schema: {
@@ -269,6 +282,30 @@ async function executeTool(
           return `• [${status}] ${preview}… (${date}) — ID: ${p.id.slice(0, 8)}`
         })
         .join('\n')
+    }
+
+    case 'get_post': {
+      const postId = await resolvePostId(supabase, client.id, input.post_id)
+      if (!postId) return 'Post not found — use list_posts to check the ID.'
+
+      const { data: post } = await supabase
+        .from('posts')
+        .select('id, caption, status, scheduled_at, published_at, image_url')
+        .eq('id', postId)
+        .eq('client_id', client.id)
+        .single()
+
+      if (!post) return 'Post not found.'
+
+      const sched = post.scheduled_at
+        ? new Date(post.scheduled_at).toLocaleString('en-KE', {
+            timeZone: 'Africa/Nairobi',
+            weekday: 'short', month: 'short', day: 'numeric',
+            hour: '2-digit', minute: '2-digit',
+          }) + ' EAT'
+        : 'not scheduled'
+
+      return `Status: ${post.status}\nScheduled: ${sched}\nImage: ${post.image_url ? 'yes' : 'no'}\n\nCaption:\n${post.caption}`
     }
 
     case 'update_caption': {
@@ -507,6 +544,15 @@ Your role:
 - Be warm, concise, and practical — keep replies under 250 words unless listing posts
 
 Times: the user is in East Africa Time (EAT, UTC+3). When they give a time in natural language ("tomorrow 9am", "Friday evening"), interpret it as EAT and convert to ISO 8601 UTC for tool calls (9am EAT = 06:00 UTC). Confirm scheduled times back to the user in EAT.
+
+Replies to a post: when the user's message starts with "[Replying to post <id>]", they replied directly to that post's Telegram message — that post is the target. Read their intent from the words:
+- "post it now", "publish", "send it" → publish_now
+- "approve", "looks good", "yes" → approve_post
+- "reject", "cancel", "drop it" → reject_post
+- a date or time → reschedule_post
+- "try again", "regenerate", "different angle", or feedback like "too formal" → reject_post with their feedback as the reason, then generate_post with the feedback in the topic
+- requests to tweak ("shorter", "add a stat", "remove the last line") → get_post to read the current caption, rewrite it yourself, then update_caption
+- a full block of text that reads like a caption (not a command) → update_caption with their text VERBATIM, do not rewrite it
 
 When you write or rewrite a caption yourself (update_caption), it must sound like a real person typed it. Apply these rules to caption text:
 ${HUMAN_WRITING_RULES}
