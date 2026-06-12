@@ -2,13 +2,13 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import Image from 'next/image'
 import { ArrowLeft } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { StatusBadge } from '@/components/posts/StatusBadge'
 import { ApproveRejectButtons } from '@/components/posts/ApproveRejectButtons'
 import { PublishButton } from '@/components/posts/PublishButton'
 import { RegenerateButton } from '@/components/posts/RegenerateButton'
+import { PlatformPreview } from '@/components/posts/PlatformPreview'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
@@ -68,18 +68,11 @@ export function PostDetailView({
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {post.image_url && (
-            <div className="relative aspect-video w-full overflow-hidden rounded-md border">
-              <Image
-                src={post.image_url}
-                alt={post.image_prompt ?? 'Post image'}
-                fill
-                sizes="(max-width: 768px) 100vw, 768px"
-                className="object-cover"
-                priority
-              />
-            </div>
-          )}
+          <PlatformPreview
+            clientName={post.clients?.name ?? 'Your Brand'}
+            caption={caption}
+            imageUrl={post.image_url}
+          />
 
           {canReview ? (
             <div className="space-y-4">
@@ -131,9 +124,7 @@ export function PostDetailView({
                 />
               </div>
             </div>
-          ) : (
-            <p className="whitespace-pre-wrap text-sm leading-relaxed">{post.caption}</p>
-          )}
+          ) : null}
 
           <div className="space-y-1 border-t pt-4 text-xs text-muted-foreground">
             <p>Created: {new Date(post.created_at).toLocaleString()}</p>
