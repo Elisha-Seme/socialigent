@@ -83,11 +83,27 @@ Deno.serve(async (_req) => {
       continue
     }
 
+    // Fetch recent captions to avoid repeating topics
+    const { data: recentPosts } = await supabase
+      .from('posts')
+      .select('caption')
+      .eq('client_id', client.id)
+      .order('created_at', { ascending: false })
+      .limit(5)
+
+    const recentCaptions = (recentPosts ?? [])
+      .map((p: { caption: string }) => p.caption)
+      .filter(Boolean)
+
+    const dupeGuard = recentCaptions.length > 0
+      ? `\n\nDO NOT write about the same topics or themes as these recent posts:\n${recentCaptions.map((c: string, i: number) => `[${i + 1}]: ${c.slice(0, 150)}…`).join('\n')}`
+      : ''
+
     // Generate content with Claude
     const prompt = `You are a LinkedIn content strategist. Generate a LinkedIn post for this brand.
 Brand: ${client.name}
 Voice: ${client.brand_voice}
-Content pillars: ${(client.content_pillars ?? []).join(', ')}
+Content pillars: ${(client.content_pillars ?? []).join(', ')}${dupeGuard}
 
 Respond ONLY with a JSON object like this (no markdown fences):
 {"caption":"...","imagePrompt":"..."}`

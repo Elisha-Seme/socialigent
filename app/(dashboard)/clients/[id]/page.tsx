@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { Pencil, Globe, Send, Sparkles } from 'lucide-react'
+import { Pencil, Globe, Send, Sparkles, BarChart2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -39,6 +39,15 @@ export default async function ClientDetailPage({
   if (!clientData) notFound()
   const client = clientData as Client
   const posts = (postsData ?? []) as Post[]
+
+  // Analytics
+  const published = posts.filter(p => p.status === 'published').length
+  const pendingApproval = posts.filter(p => p.status === 'pending_approval').length
+  const approved = posts.filter(p => p.status === 'approved').length
+  const rejected = posts.filter(p => p.status === 'rejected').length
+  const failed = posts.filter(p => p.status === 'failed').length
+  const reviewed = published + approved + rejected + failed
+  const approvalRate = reviewed > 0 ? Math.round((published + approved) / reviewed * 100) : null
 
   return (
     <div className="space-y-6">
@@ -130,6 +139,30 @@ export default async function ClientDetailPage({
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <BarChart2 className="h-4 w-4" /> Analytics
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+            {[
+              { label: 'Published', value: published, color: 'text-green-600' },
+              { label: 'Approved', value: approved, color: 'text-blue-500' },
+              { label: 'Pending', value: pendingApproval, color: 'text-amber-500' },
+              { label: 'Rejected / Failed', value: rejected + failed, color: 'text-destructive' },
+              { label: 'Approval rate', value: approvalRate !== null ? `${approvalRate}%` : '—', color: 'text-foreground' },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="space-y-1 text-center">
+                <p className={`text-2xl font-bold ${color}`}>{value}</p>
+                <p className="text-xs text-muted-foreground">{label}</p>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>
