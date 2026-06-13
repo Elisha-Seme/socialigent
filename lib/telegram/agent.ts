@@ -207,6 +207,16 @@ const TOOLS: Anthropic.Tool[] = [
 
 type ToolInput = Record<string, string>
 
+// Colour dots matching the dashboard status palette (calendar legend)
+const STATUS_EMOJI: Record<string, string> = {
+  draft: '⚪',
+  pending_approval: '🟡',
+  approved: '🔵',
+  published: '🟢',
+  rejected: '🔴',
+  failed: '🔴',
+}
+
 // The agent mostly sees 8-char short IDs (list_posts output) — resolve a short
 // prefix back to the full UUID before querying.
 async function resolvePostId(
@@ -274,12 +284,13 @@ async function executeTool(
 
       return data
         .map((p) => {
+          const dot = STATUS_EMOJI[p.status] ?? '⚪'
           const status = p.status.replace('_', ' ')
           const preview = p.caption?.slice(0, 70) ?? '(no caption)'
           const date = p.scheduled_at
             ? new Date(p.scheduled_at).toLocaleDateString('en-KE', { timeZone: 'Africa/Nairobi', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
             : new Date(p.created_at).toLocaleDateString('en-KE', { timeZone: 'Africa/Nairobi', month: 'short', day: 'numeric' })
-          return `• [${status}] ${preview}… (${date}) — ID: ${p.id.slice(0, 8)}`
+          return `${dot} [${status}] ${preview}… (${date}) — ID: ${p.id.slice(0, 8)}`
         })
         .join('\n')
     }
@@ -305,7 +316,7 @@ async function executeTool(
           }) + ' EAT'
         : 'not scheduled'
 
-      return `Status: ${post.status}\nScheduled: ${sched}\nImage: ${post.image_url ? 'yes' : 'no'}\n\nCaption:\n${post.caption}`
+      return `Status: ${STATUS_EMOJI[post.status] ?? '⚪'} ${post.status.replace('_', ' ')}\nScheduled: ${sched}\nImage: ${post.image_url ? 'yes' : 'no'}\n\nCaption:\n${post.caption}`
     }
 
     case 'update_caption': {
@@ -543,6 +554,7 @@ Your role:
 - Answer social media strategy questions in the client's brand voice
 - Be warm, concise, and practical — keep replies under 250 words unless listing posts
 - Format for Telegram chat: short paragraphs, **bold** for key info, • bullets for lists. Never use markdown headers (#), tables, or code blocks
+- When mentioning a post's status, prefix it with its colour dot: 🟢 published, 🔵 approved, 🟡 pending approval, 🔴 rejected/failed, ⚪ draft
 
 Times: the user is in East Africa Time (EAT, UTC+3). When they give a time in natural language ("tomorrow 9am", "Friday evening"), interpret it as EAT and convert to ISO 8601 UTC for tool calls (9am EAT = 06:00 UTC). Confirm scheduled times back to the user in EAT.
 

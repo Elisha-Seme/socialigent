@@ -9,7 +9,7 @@ export async function sendApprovalMessage(client: Client, post: Post): Promise<b
 
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'
   const caption =
-    `📝 New post for ${client.name}\n\n` +
+    `📝 New post for ${client.name} — 🟡 awaiting your approval\n\n` +
     post.caption.slice(0, 900) +
     `\n\n👉 ${appUrl}/posts/${post.id}`
 
