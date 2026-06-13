@@ -56,12 +56,49 @@ export async function sendTyping(chatId: number | string): Promise<void> {
   }).catch(() => {})
 }
 
-// Send a plain text message to a chat.
+// Convert the agent's markdown-ish output to Telegram HTML so **bold** etc.
+// render properly instead of showing raw asterisks.
+function toTelegramHtml(text: string): string {
+  let html = text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+
+  return html
+    .replace(/```(?:\w+)?\n?([\s\S]*?)```/g, (_m, code) => `<pre>${code.trim()}</pre>`)
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/(?<![\w*])\*([^*\n]+)\*(?![\w*])/g, '<i>$1</i>')
+    .replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
+    .replace(/^[-*]\s+/gm, '• ')
+}
+
+// Send a message to a chat, rendering markdown as Telegram HTML.
+// Falls back to plain text if Telegram rejects the markup.
 export async function sendMessage(chatId: number | string, text: string): Promise<void> {
   if (!BOT_TOKEN) return
-  await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text }),
-  }).catch(() => {})
+  const endpoint = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`
+
+  try {
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: toTelegramHtml(text),
+        parse_mode: 'HTML',
+        disable_web_page_preview: true,
+      }),
+    })
+    if (res.ok) return
+
+    // Malformed HTML (unbalanced markers etc.) — resend as plain text
+    await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text }),
+    })
+  } catch {
+    // network failure — nothing more we can do
+  }
 }
