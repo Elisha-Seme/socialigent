@@ -1,5 +1,9 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { generateAndQueuePost } from '@/lib/ai/pipeline'
+import type { Client } from '@/lib/types'
+
+export const maxDuration = 60
 
 export async function GET() {
   const supabase = await createClient()
@@ -43,5 +47,15 @@ export async function POST(request: Request) {
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
+
+  // Instant sample post (#5) — best-effort, never blocks client creation.
+  if (body.generate_sample) {
+    try {
+      await generateAndQueuePost({ client: data as Client, suppressTelegram: true })
+    } catch (err) {
+      console.error('Sample post generation failed:', err)
+    }
+  }
+
   return NextResponse.json(data, { status: 201 })
 }

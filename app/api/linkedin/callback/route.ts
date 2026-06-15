@@ -37,15 +37,45 @@ export async function GET(request: NextRequest) {
       // non-fatal — page posting may still work
     }
 
+    // Auto-detect an admin'd company Page so the operator doesn't paste a Page ID.
+    // Requires org scopes (rw_organization_admin) that are gated behind Community
+    // Management API approval — until granted this returns 403 and we skip it,
+    // so the code activates automatically once the scope is approved.
+    let pageId: string | null = null
+    try {
+      const aclRes = await fetch(
+        'https://api.linkedin.com/v2/organizationalEntityAcls?q=roleAssignee&role=ADMINISTRATOR&state=APPROVED',
+        {
+          headers: {
+            Authorization: `Bearer ${tokens.access_token}`,
+            'LinkedIn-Version': '202501',
+            'X-Restli-Protocol-Version': '2.0.0',
+          },
+        }
+      )
+      if (aclRes.ok) {
+        const acl = await aclRes.json()
+        const target: string | undefined = acl?.elements?.[0]?.organizationalTarget
+        // target looks like "urn:li:organization:12345678"
+        const match = target?.match(/urn:li:organization:(\d+)/)
+        if (match) pageId = match[1]
+      }
+    } catch {
+      // non-fatal — fall back to personal profile / manual Page ID
+    }
+
     const supabase = createAdminClient()
+    const update: Record<string, unknown> = {
+      linkedin_access_token: tokens.access_token,
+      linkedin_token_expires_at: expiresAt,
+      linkedin_person_id: personId,
+      updated_at: new Date().toISOString(),
+    }
+    if (pageId) update.linkedin_page_id = pageId
+
     const { error: updateError } = await supabase
       .from('clients')
-      .update({
-        linkedin_access_token: tokens.access_token,
-        linkedin_token_expires_at: expiresAt,
-        linkedin_person_id: personId,
-        updated_at: new Date().toISOString(),
-      })
+      .update(update)
       .eq('id', parsed.clientId)
 
     if (updateError) throw updateError

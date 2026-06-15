@@ -22,6 +22,35 @@ const DAYS: PostingSlot['day'][] = [
   'sunday',
 ]
 
+// Best-practice cadences. Times are UTC; 06:00 UTC = 9:00am EAT (peak engagement).
+const PRESETS: Record<string, { label: string; hint: string; slots: PostingSlot[] }> = {
+  light: {
+    label: 'Light',
+    hint: '1×/week',
+    slots: [{ day: 'tuesday', time: '06:00' }],
+  },
+  standard: {
+    label: 'Standard',
+    hint: '3×/week',
+    slots: [
+      { day: 'tuesday', time: '06:00' },
+      { day: 'wednesday', time: '06:00' },
+      { day: 'thursday', time: '06:00' },
+    ],
+  },
+  aggressive: {
+    label: 'Aggressive',
+    hint: '5×/week',
+    slots: [
+      { day: 'monday', time: '06:00' },
+      { day: 'tuesday', time: '06:00' },
+      { day: 'wednesday', time: '06:00' },
+      { day: 'thursday', time: '06:00' },
+      { day: 'friday', time: '06:00' },
+    ],
+  },
+}
+
 export function ScheduleEditor({
   value,
   onChange,
@@ -42,10 +71,28 @@ export function ScheduleEditor({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
+      <div className="space-y-1.5">
+        <p className="text-xs font-medium text-muted-foreground">Quick presets (9am EAT, peak engagement)</p>
+        <div className="flex flex-wrap gap-2">
+          {Object.entries(PRESETS).map(([key, preset]) => (
+            <Button
+              key={key}
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => onChange(preset.slots)}
+            >
+              {preset.label}
+              <span className="ml-1.5 text-xs text-muted-foreground">{preset.hint}</span>
+            </Button>
+          ))}
+        </div>
+      </div>
+
       {value.length === 0 && (
         <p className="text-sm text-muted-foreground">
-          No posting slots yet. Posts will only be generated for scheduled slots.
+          No posting slots yet. Pick a preset above or add slots manually.
         </p>
       )}
       {value.map((slot, i) => (

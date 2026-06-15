@@ -1,11 +1,12 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { Pencil, Globe, Send, Sparkles, BarChart2 } from 'lucide-react'
+import { Pencil, Globe, Sparkles, BarChart2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { GeneratePostButton } from '@/components/clients/GeneratePostButton'
+import { TelegramConnect } from '@/components/clients/TelegramConnect'
 import type { Client, Post } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
@@ -115,14 +116,7 @@ export default async function ClientDetailPage({
                 </p>
               ) : null
             })()}
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <Send className="h-4 w-4" /> Telegram
-              </span>
-              <Badge variant={client.telegram_chat_id ? 'default' : 'secondary'}>
-                {client.telegram_chat_id ? 'Configured' : 'Off'}
-              </Badge>
-            </div>
+            <TelegramConnect clientId={client.id} isConnected={!!client.telegram_chat_id} />
             <div className="pt-2 text-muted-foreground">
               {client.posting_schedule.length === 0 ? (
                 <p>No posting slots scheduled.</p>

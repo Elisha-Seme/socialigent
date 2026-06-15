@@ -59,7 +59,7 @@ export async function sendTyping(chatId: number | string): Promise<void> {
 // Convert the agent's markdown-ish output to Telegram HTML so **bold** etc.
 // render properly instead of showing raw asterisks.
 function toTelegramHtml(text: string): string {
-  let html = text
+  const html = text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')

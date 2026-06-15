@@ -100,6 +100,49 @@ export async function POST(request: NextRequest) {
 
   const chatId = String(message.chat.id)
 
+  // ── 2·0 Deep-link connect: /start <token> binds this chat to a client ───────
+  const startMatch = message.text?.match(/^\/start\s+([a-f0-9]{16,64})$/)
+  if (startMatch) {
+    const token = startMatch[1]
+    const supabase = createAdminClient()
+    const { data: pending } = await supabase
+      .from('clients')
+      .select('id, name')
+      .eq('telegram_connect_token', token)
+      .single()
+
+    if (pending) {
+      await supabase
+        .from('clients')
+        .update({
+          telegram_chat_id: chatId,
+          telegram_connect_token: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', pending.id)
+
+      await sendMessage(
+        chatId,
+        `✅ Connected to **${pending.name}**! You'll get post approvals here, and you can message me to create or manage posts.`,
+      )
+    } else {
+      await sendMessage(
+        chatId,
+        '⚠️ That connect link is invalid or has already been used. Generate a fresh one from the dashboard.',
+      )
+    }
+    return NextResponse.json({ ok: true })
+  }
+
+  // Bare /start with no token — friendly nudge
+  if (message.text?.trim() === '/start') {
+    await sendMessage(
+      chatId,
+      'Hi! To connect this chat to a brand, open the connect link from your Socialigent dashboard.',
+    )
+    return NextResponse.json({ ok: true })
+  }
+
   // Access control — only registered chats get AI responses
   const client = await findClientByChatId(chatId)
   if (!client) {

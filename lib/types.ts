@@ -15,6 +15,7 @@ export interface Client {
   linkedin_access_token: string | null
   linkedin_token_expires_at: string | null
   telegram_chat_id: string | null
+  telegram_connect_token: string | null
   posting_schedule: PostingSlot[]
   is_active: boolean
   created_at: string
