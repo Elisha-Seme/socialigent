@@ -7,6 +7,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    '/((?!login|privacy|auth/callback|api/telegram/webhook|api/linkedin/callback|_next/static|_next/image|favicon).*)',
+    '/((?!login|signup|onboard|privacy|auth/callback|api/telegram/webhook|api/linkedin/callback|_next/static|_next/image|favicon).*)',
   ],
 }

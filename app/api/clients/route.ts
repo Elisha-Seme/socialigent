@@ -20,6 +20,9 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
   const body = await request.json()
 
   const { name, brand_voice } = body
@@ -33,6 +36,7 @@ export async function POST(request: Request) {
   const { data, error } = await supabase
     .from('clients')
     .insert({
+      user_id: user.id,
       name,
       brand_voice,
       content_pillars: body.content_pillars ?? [],
@@ -48,7 +52,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 
-  // Instant sample post (#5) — best-effort, never blocks client creation.
   if (body.generate_sample) {
     try {
       await generateAndQueuePost({ client: data as Client, suppressTelegram: true })

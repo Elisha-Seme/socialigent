@@ -80,7 +80,7 @@ export async function GET(request: NextRequest) {
 
     if (updateError) throw updateError
 
-    return NextResponse.redirect(`${appUrl}/clients/${parsed.clientId}?linkedin_connected=1`)
+    return NextResponse.redirect(`${appUrl}/?linkedin_connected=1`)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     console.error('LinkedIn callback error:', msg)

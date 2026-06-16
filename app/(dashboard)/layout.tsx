@@ -17,6 +17,16 @@ export default async function DashboardLayout({
     redirect('/login')
   }
 
+  // If the user has no client profile yet, send them through onboarding
+  const { data: client } = await supabase
+    .from('clients')
+    .select('id')
+    .single()
+
+  if (!client) {
+    redirect('/onboard')
+  }
+
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar />
