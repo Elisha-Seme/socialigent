@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { Sparkles, Loader2, Globe, Send, Check, ArrowRight } from 'lucide-react'
 import Link from 'next/link'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
@@ -272,7 +272,7 @@ export default function OnboardPage() {
               </CardContent>
             </Card>
 
-            <Button variant="outline" className="w-full" onClick={() => router.push('/')}>
+            <Button variant="outline" className="w-full" onClick={() => router.push('/overview')}>
               Skip for now — go to dashboard
             </Button>
           </div>

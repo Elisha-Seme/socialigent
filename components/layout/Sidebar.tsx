@@ -6,7 +6,7 @@ import { LayoutDashboard, FileText, Calendar, Settings } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 export const links = [
-  { href: '/', label: 'Dashboard', icon: LayoutDashboard },
+  { href: '/overview', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/posts', label: 'Posts', icon: FileText },
   { href: '/calendar', label: 'Calendar', icon: Calendar },
   { href: '/settings', label: 'Settings', icon: Settings },
@@ -18,13 +18,13 @@ export function Sidebar() {
   return (
     <aside className="hidden md:flex w-56 flex-col border-r bg-card">
       <div className="flex h-14 items-center border-b px-4">
-        <Link href="/" className="text-lg font-bold">
+        <Link href="/overview" className="text-lg font-bold">
           Socialigent
         </Link>
       </div>
       <nav className="flex-1 space-y-1 p-2">
         {links.map(({ href, label, icon: Icon }) => {
-          const active = href === '/' ? pathname === '/' : pathname.startsWith(href)
+          const active = href === '/overview' ? pathname === '/overview' : pathname.startsWith(href)
           return (
             <Link
               key={href}
