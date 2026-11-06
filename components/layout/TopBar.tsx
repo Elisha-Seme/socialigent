@@ -50,7 +50,7 @@ export function TopBar({ email }: { email: string }) {
           {/* Content */}
           <aside className="relative flex w-56 flex-col bg-card h-full border-r animate-in slide-in-from-left duration-200">
             <div className="flex h-14 items-center justify-between border-b px-4">
-              <Link href="/" className="text-lg font-bold" onClick={() => setIsOpen(false)}>
+              <Link href="/overview" className="text-lg font-bold" onClick={() => setIsOpen(false)}>
                 Socialigent
               </Link>
               <Button variant="ghost" size="icon" onClick={() => setIsOpen(false)}>
@@ -59,7 +59,7 @@ export function TopBar({ email }: { email: string }) {
             </div>
             <nav className="flex-1 space-y-1 p-2">
               {links.map(({ href, label, icon: Icon }) => {
-                const active = href === '/' ? pathname === '/' : pathname.startsWith(href)
+                const active = href === '/overview' ? pathname === '/overview' : pathname.startsWith(href)
                 return (
                   <Link
                     key={href}

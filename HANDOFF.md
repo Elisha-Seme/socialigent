@@ -1,19 +1,19 @@
-# Socialigent — Agent Handoff Document
+# Socialigent: Agent Handoff Document
 
-> **Audience:** Any AI coding agent (or human developer) picking up this project.
-> **Status as of 2026-06-11:** v1 is COMPLETE and LIVE in production. The full pipeline works end-to-end and has been verified with a real LinkedIn post.
+> **Audience:** any AI coding agent (or developer) picking up this project.
+> **Status as of 2026-11-06:** live in production as a **self-serve, one-brand-per-account** product. Tenant isolation, the LinkedIn Posts API migration, and the publish lock shipped on this date.
 
 ---
 
 ## 1. What this project is
 
-**Socialigent** is a multi-client social media management agent. The operator (Elisha, a solo founder) manages multiple client brands. For each client, the system:
+**Socialigent** is a self-serve LinkedIn assistant. Each account owns exactly one brand (`clients` row). For that brand the system:
 
-1. **Generates** LinkedIn posts automatically on a schedule — captions written by Claude (Anthropic API), images by DALL-E 3 (not yet active, no OpenAI key).
-2. **Routes for approval** via two channels: a web dashboard and a Telegram bot (@SocialiGent_bot) with inline Approve/Reject/Edit buttons.
-3. **Publishes** approved posts to LinkedIn automatically when their scheduled slot arrives, or manually via a button.
+1. **Drafts** posts an hour before each posting slot: three caption variations by Claude, plus an optional AI image.
+2. **Routes for approval** to the brand's Telegram chat (inline Approve / Reject / Edit buttons, plus a chat agent that understands "make it shorter", "post it now", "move it to Friday") and to the web dashboard.
+3. **Publishes** approved posts to LinkedIn when their slot arrives (cron), or immediately on request.
 
-The operator's daily workflow is: receive a Telegram message with a draft → tap ✅ Approve → the post goes live at its scheduled time. That's it.
+Signup is open (`/signup` → `/onboard`). Onboarding drafts a brand profile from the user's website, sets a schedule, captures the browser timezone, and generates a sample post.
 
 ---
 
@@ -22,80 +22,72 @@ The operator's daily workflow is: receive a Telegram message with a draft → ta
 | Thing | Value |
 |---|---|
 | Production app | https://socialigent.vercel.app |
-| GitHub repo | https://github.com/Elisha-Seme/socialigent (public — NEVER commit secrets) |
+| GitHub repo | https://github.com/Elisha-Seme/socialigent (public, NEVER commit secrets) |
 | Vercel project | `socialigent` under elishaseme99-gmailcoms-projects (auto-deploys from master) |
-| Supabase project ref | `qdpgfyfrpzrqwpzcuyju` (https://qdpgfyfrpzrqwpzcuyju.supabase.co) |
+| Supabase project ref | `qdpgfyfrpzrqwpzcuyju` |
 | Supabase owner account | semeellisha29@gmail.com (NOT the user's main email) |
-| Dashboard login | elishaseme99@gmail.com / password is known to the user |
-| Telegram bot | @SocialiGent_bot |
-| Operator's Telegram chat ID | 716420092 |
-| LinkedIn app client ID | 77k80qpfar8snm |
-| LinkedIn Company Page ID | 127924150 (Socialigent page) |
-| Privacy policy | https://socialigent.vercel.app/privacy (required by LinkedIn dev portal) |
+| Telegram bot | @SocialiGent_bot, webhook `/api/telegram/webhook` |
+| LinkedIn app client ID | 77k80qpfar8snm (Default Tier, "Share on LinkedIn" only) |
+| Privacy policy | https://socialigent.vercel.app/privacy (required by LinkedIn) |
 
-**All secrets live in `.env.local` in the project root** (gitignored). Read that file for: Supabase keys, Anthropic API key, LinkedIn client secret, Telegram bot token + webhook secret, and the Supabase Management API access token (`SUPABASE_ACCESS_TOKEN`).
+Secrets live in `.env.local` (gitignored); `.env.example` lists every variable. Vercel production has the same set except `SUPABASE_ACCESS_TOKEN`. `OPENAI_API_KEY` is **not set anywhere**, so images are off. `OAUTH_STATE_SECRET` is optional (falls back to `LINKEDIN_CLIENT_SECRET`).
 
 ---
 
 ## 3. Tech stack
 
-- **Next.js 14** (App Router, NOT 15 — params are not Promises) + TypeScript + Tailwind v3 (HSL CSS variables, NOT v4 oklch)
-- **UI:** shadcn/ui components hand-written on Radix primitives (`components/ui/`) — do NOT run `npx shadcn add`, it generates incompatible Tailwind-v4/Base-UI components
-- **Supabase:** Postgres + Auth (email/password) + Storage (`post-images` public bucket) + Edge Functions (Deno)
-- **AI:** `claude-haiku-4-5-20251001` for captions, `dall-e-3` at 1792x1024 for images (inactive — no key yet)
-- **APIs:** LinkedIn (ugcPosts v2, OAuth 2.0), Telegram Bot API
-- **Hosting:** Vercel (hobby plan), GitHub master branch auto-deploys
+- **Next.js 14** App Router (params are NOT Promises) + TypeScript + Tailwind v3 (HSL CSS variables)
+- **UI:** hand-written shadcn components on Radix (`components/ui/`). Do NOT run `npx shadcn add` (it generates Tailwind v4 / Base UI code). Icons: lucide-react. Motion: framer-motion.
+- **Supabase:** Postgres + Auth (email/password) + Storage (`post-images`, public) + Edge Functions (Deno) + pg_cron/pg_net
+- **AI:** `claude-haiku-4-5-20251001` (constant `CAPTION_MODEL` in `_shared/content.ts`); images via OpenAI `gpt-image-2` when `OPENAI_API_KEY` is set (`OPENAI_IMAGE_MODEL` overrides)
+- **LinkedIn:** versioned REST APIs, `/rest/posts` + `/rest/images`, `LinkedIn-Version: 202610`
+- **Tests:** Vitest (`npm test`)
 
 ---
 
 ## 4. How to access the Supabase database (IMPORTANT)
 
-The Supabase project belongs to a DIFFERENT account (semeellisha29@gmail.com) than the user's CLI login, so `supabase link` / `supabase db push` FAIL with privilege errors. **Use the Management API instead:**
+The project belongs to a different account than the local Supabase CLI login, so `supabase link` / `db push` fail. Use the **Management API**:
 
 ```bash
-# Run arbitrary SQL (the access token is in .env.local as SUPABASE_ACCESS_TOKEN)
 curl -s -X POST "https://api.supabase.com/v1/projects/qdpgfyfrpzrqwpzcuyju/database/query" \
   -H "Authorization: Bearer $SUPABASE_ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"query": "SELECT * FROM clients;"}'
+  -d '{"query": "select * from pg_policies where schemaname = $$public$$;"}'
 ```
 
-The CLI DOES work for Edge Functions and secrets when you pass the token as an env var:
+The CLI works for Edge Functions and secrets when given the token:
 
 ```bash
 SUPABASE_ACCESS_TOKEN=<token> npx supabase functions deploy publish-posts --project-ref qdpgfyfrpzrqwpzcuyju
 SUPABASE_ACCESS_TOKEN=<token> npx supabase secrets set KEY=value --project-ref qdpgfyfrpzrqwpzcuyju
 ```
 
-Direct Postgres connections (port 5432) time out — do not attempt psql.
+Direct Postgres connections (port 5432) time out. There is no `supabase_migrations` table in prod: migrations were applied by hand through the API.
 
 ---
 
-## 5. Database schema
+## 5. Data model and security
 
-Migrations live in `supabase/migrations/` (already applied to production — they are the source of truth).
+Migrations in `supabase/migrations/` are the source of truth and match production as of `20261106000001_tenant_isolation.sql`.
 
-**`clients`** — one row per client brand
-- `id` uuid PK, `name` text, `brand_voice` text, `content_pillars` text[]
-- `linkedin_page_id` text (the company page numeric ID, e.g. 127924150)
-- `linkedin_person_id` text (member's personal ID from /v2/userinfo `sub` — fallback author)
-- `linkedin_access_token` text, `linkedin_token_expires_at` timestamptz (~2 month TTL)
-- `telegram_chat_id` text, `posting_schedule` jsonb (array of `{day, time}` in UTC), `is_active` bool
+**`clients`** (one per auth user, unique `user_id`): `name`, `brand_voice`, `content_pillars[]`, `posting_schedule` (jsonb `[{day, time}]`, UTC), `timezone` (IANA, used by the Telegram agent), `is_active` (false = no auto-drafting), `linkedin_page_id`, `linkedin_person_id`, `linkedin_access_token`, `linkedin_token_expires_at` (~2 months), `telegram_chat_id` (unique), `telegram_connect_token`.
 
-**`posts`**
-- `id` uuid PK, `client_id` FK, `caption` text, `image_prompt` text, `image_url` text
-- `platform` ('linkedin'), `status`: `draft | pending_approval | approved | rejected | published | failed`
-- `scheduled_at`, `published_at`, `linkedin_post_id`, `rejection_reason`, `error_message`, `retry_count`
+**`posts`**: `status` ∈ `draft | pending_approval | approved | publishing | rejected | published | failed`; `caption`, `caption_variations[]`, `image_prompt`, `image_url`, `scheduled_at`, `published_at`, `linkedin_post_id`, `rejection_reason`, `error_message`, `retry_count`.
 
-**`post_history`** — audit trail of every status transition (`previous_status`, `new_status`, `changed_by`, `note`)
+**`post_history`**: every status change (`previous_status` NOT NULL, `new_status`, `changed_by`, `note`).
 
-**Storage:** `post-images` public bucket, path `{clientId}/{fileId}.png`
+**`telegram_messages`**: agent memory per chat; `[SUMMARY]` rows hold compacted history.
 
-**RLS:** single-tenant — all tables allow `authenticated` role full access; webhooks/Edge Functions use service role.
+**RLS (owner-only):**
+- `clients`: select/insert/update/delete only where `user_id = auth.uid()`. **Column grants**: users may write only `name, brand_voice, content_pillars, linkedin_page_id, posting_schedule, is_active, timezone` (+`user_id` on insert, `updated_at` on update). LinkedIn tokens and Telegram binding are written only by the server (service role) in the OAuth callback and the connect flow.
+- `posts`: users can select/delete their brand's posts and update only `caption, status, scheduled_at, rejection_reason, updated_at`. Inserts and `image_url` are server-only, and `publishPost()` additionally refuses any image outside `post-images/{client_id}/` in this project. `post_history`: select + insert for owned posts.
+- `telegram_messages`: no access for `anon`/`authenticated`; service role only.
+- Storage `post-images`: public bucket, so files load by public URL. No SELECT policy (the bucket can't be listed) and no INSERT policy (only the service role uploads).
 
-**Cron (pg_cron, jobs visible via `SELECT * FROM cron.job`):**
-- `generate-drafts-hourly` (`0 * * * *`) → POSTs to Edge Function `generate-drafts`
-- `publish-posts-15min` (`*/15 * * * *`) → POSTs to Edge Function `publish-posts`
+**Server rule:** every API route calls `requireUser()` (`lib/api/session.ts`), proves ownership with the user-session client (RLS), and only then uses the service-role client (`createAdminClient`) for token-bearing work.
+
+**Cron (pg_cron → pg_net → Edge Functions):** `generate-drafts-hourly` (`0 * * * *`) and `publish-posts-15min` (`*/15 * * * *`).
 
 ---
 
@@ -103,104 +95,84 @@ Migrations live in `supabase/migrations/` (already applied to production — the
 
 ```
 app/
-  (dashboard)/            # auth-protected route group: overview, clients CRUD, posts list/detail
-  login/  auth/callback/  privacy/
+  page.tsx                  # landing page (InteractivePipeline demo in components/landing)
+  (dashboard)/              # overview, posts, posts/[id], calendar, settings (auth + onboarding gate in layout)
+  login/ signup/ onboard/ privacy/ auth/callback/
   api/
-    generate/             # orchestrates: Claude caption → (DALL-E image) → insert post → Telegram notify
-    approve/  reject/     # status transitions + history
-    publish/              # manual publish, org→person fallback
-    linkedin/oauth/ + callback/   # OAuth; callback also fetches /v2/userinfo for person ID
-    telegram/webhook/     # handles bot button taps; verifies X-Telegram-Bot-Api-Secret-Token
-    clients/ + clients/[id]/
+    generate/               # new draft for the brand, or regenerate a rejected post
+    approve/ reject/        # status transitions (optimistic: only if status unchanged)
+    publish/                # manual publish → publishPost()
+    clients/ clients/[id]/  # brand create/read/update/delete (validated by lib/clients.ts)
+    clients/draft/          # brand profile from a website
+    linkedin/oauth|callback # signed state + nonce cookie + same-user check
+    telegram/connect|webhook
 lib/
-  supabase/  (client, server, middleware, admin)   # @supabase/ssr pattern
-  ai/        (claude.ts, dalle.ts)
-  linkedin/  (auth.ts, publish.ts)                 # publish tries page, falls back to person
-  telegram/  (bot.ts, webhook.ts)
-  schedule.ts  types.ts
-components/   (ui/, layout/, clients/, posts/)
-supabase/
-  migrations/             # applied; keep in sync with prod
-  functions/              # Deno Edge Functions (excluded from Next tsconfig)
-middleware.ts             # auth gate; exclusions: login|privacy|auth/callback|api/telegram/webhook|api/linkedin/callback
+  api/session.ts            # requireUser(), jsonError(), readJson()
+  ai/                       # claude.ts (captions), pipeline.ts (the one generate pipeline), brand.ts, style.ts
+  linkedin/                 # auth.ts (OAuth), state.ts (HMAC state), publish.ts (re-export)
+  telegram/                 # agent.ts (tools + loop), history.ts, bot.ts, photos.ts, webhook.ts
+  storage/images.ts  time.ts  clients.ts  schedule.ts  types.ts
+supabase/functions/
+  _shared/                  # IMPORT-FREE modules used by BOTH Next and Deno:
+    content.ts              #   writing rules, stripAiMarkers, schedule, drafting-paused rule, prompt + parser
+    linkedin.ts             #   Little Text escaping, Posts/Images API, publishPost() lock, stale recovery
+    image.ts                #   OpenAI gpt-image generation (base64 → bytes)
+    telegram.ts             #   approval message builder, telegramCall, escapeHtml
+  generate-drafts/  publish-posts/
+tests/                      # Vitest: publish lock (incl. concurrency), escaping, OAuth state, schedule, parsing, timezones
 ```
 
 ---
 
-## 7. Critical gotchas (hard-won lessons — do not relearn these)
+## 7. Critical gotchas (do not relearn these)
 
-1. **Vercel env vars:** `vercel env add KEY production <<< "value"` adds a TRAILING NEWLINE that breaks OAuth (`invalid_client`). Always use `printf "value" | vercel env add KEY production`. All current vars are clean.
-2. **LinkedIn page posting is gated.** The app only has Default Tier "Share on LinkedIn" (`w_member_social` = personal posting). Posting as the Company Page (`urn:li:organization`) needs `w_organization_social`, which requires **Community Management API** approval — the request button is currently grayed out in the LinkedIn dev portal. The code already handles this: it tries the page first, catches 403 ACCESS_DENIED, and posts as the personal profile (`urn:li:person:{linkedin_person_id}`). When approval is granted: add `w_organization_social` back to `SCOPES` in `lib/linkedin/auth.ts`, redeploy, user clicks Reconnect.
-3. **OAuth scopes currently:** `openid profile w_member_social`. Adding unauthorized scopes makes LinkedIn show "Bummer, something went wrong" with no useful detail.
-4. **DALL-E URLs expire in 1 hour** — `lib/storage/images.ts` downloads and re-uploads to Supabase Storage immediately. Never store the raw OpenAI URL.
-5. **Telegram bots can't message first** — the user must /start the bot before it can send. Already done for chat 716420092; new clients' contacts must do the same.
-6. **Edge Functions are Deno:** `npm:` import specifiers, `Deno.env.get()`. They are excluded from the root tsconfig — `npx tsc --noEmit` ignores them, so review them manually after edits.
-7. **shadcn CLI is poisoned** for this repo (generates Tailwind v4 components). Write new UI components by hand following the existing patterns in `components/ui/`.
-8. **LinkedIn API calls** need `LinkedIn-Version: 202501` and `X-Restli-Protocol-Version: 2.0.0` headers.
-9. **Approve ≠ publish.** Approval marks content ready; actual publishing happens via the manual button or the 15-min cron once `scheduled_at` has passed. This is intentional design.
+1. **Shared modules must stay import-free.** Next imports `@/supabase/functions/_shared/x`, Deno imports `../_shared/x.ts`. A relative import inside `_shared` breaks one of the two. Type-check Deno with `cd supabase/functions && npx deno@2 check --no-lock --node-modules-dir=none generate-drafts/index.ts publish-posts/index.ts`.
+2. **LinkedIn versions expire.** `LINKEDIN_VERSION = '202610'` sunsets 2027-10-15; older versions return `426 NONEXISTENT_VERSION`. Bump it yearly.
+3. **Captions are Little Text.** `/rest/posts` `commentary` needs reserved characters escaped and hashtags as `{hashtag|\#|tag}`. `toLittleText()` does this; never send raw captions.
+4. **Publishing always goes through `publishPost()`.** It claims the row (`status → publishing` only if unchanged), so overlapping cron runs or a double-click can't double-post. A crash leaves `publishing`; `recoverStalePublishing()` marks it `failed` after 10 minutes and alerts the user. It never auto-retries, because the post may already be live.
+5. **LinkedIn page posting is gated.** Only `w_member_social` is granted. Page posting needs `w_organization_social` (Community Management API approval). Until then, `publishToLinkedIn()` gets a 403 for the page and posts as the member (`urn:li:person:{linkedin_person_id}`). When approved, add the scope in `lib/linkedin/auth.ts` and have users reconnect.
+6. **Adding unauthorized OAuth scopes** makes LinkedIn show "Bummer, something went wrong" with no detail.
+7. **Images:** DALL-E 3 (removed 2026-05-12) and gpt-image-1 (removed 2026-10-23) are gone. GPT image models return base64 only; `generateImage()` returns bytes for direct upload. Check OpenAI's deprecations page before changing models.
+8. **Vercel env vars:** `vercel env add KEY production <<< "value"` adds a trailing newline that breaks OAuth. Use `printf "value" | vercel env add KEY production`.
+9. **Telegram bots can't message first.** Users connect with the dashboard's deep link (`/start <token>`). One chat drives one brand; connecting a chat elsewhere releases it from the old brand and clears that chat's agent memory.
+10. **Auto-drafting pauses itself** when the last 3 drafts sat unreviewed past their slot (`isDraftingPaused`). The overview shows a banner; reviewing any draft resumes it.
+11. **Approve ≠ publish.** Approval marks a post ready; the 15-minute cron publishes it once `scheduled_at` has passed (or the user publishes now).
+12. **Schema changes:** run SQL through the Management API, then add the same SQL as a migration file so the repo stays the source of truth. Check `pg_policies` before assuming what production looks like.
 
 ---
 
-## 8. What's NOT done / improvement roadmap
+## 8. Not done / next steps
 
-### Missing config (no code needed)
-- `OPENAI_API_KEY` — user will add later; image generation activates automatically (code already checks for the key and degrades gracefully to text-only).
-- Community Management API approval from LinkedIn (see gotcha #2).
-
-### High-priority improvements (best next batch)
-1. **Toast notifications** for approve/reject/generate/publish actions (no feedback currently).
-2. **Loading states** — Generate takes 10–15s with no progress indicator.
-3. **Editable caption** on the post detail page before approving (the Telegram "Edit" button links there, but there's no edit field — it's a dead end).
-4. **Regenerate button** on rejected posts, feeding the rejection reason back into the Claude prompt.
-5. **Failure alerts via Telegram** — when cron publishing fails, the user only finds out by checking the dashboard.
-
-### Medium priority
-6. Content calendar view (weekly/monthly grid of scheduled+published posts).
-7. Manual date/time picker for scheduling individual posts.
-8. Multiple caption variations per generation, pick-best UX.
-9. Duplicate-topic guard: include recent post topics in the generation prompt to avoid repetition.
-10. Status timeline on post detail page (render `post_history` — data is already recorded).
-11. Mobile responsiveness (sidebar → drawer; approvals often happen on phone).
-12. LinkedIn token expiry Telegram alert 7 days before (~2-month token TTL; dashboard shows a warning <14 days but nobody looks at dashboards).
-
-### Future
-13. More platforms: Meta Graph API (FB/IG), X. `posts.platform` column already exists.
-14. Post analytics (impressions/reactions) — blocked on the same LinkedIn API tier as page posting.
-15. Telegram reply-to-edit (reply to the bot's draft message with replacement caption text).
-16. Multi-operator support (real multi-tenancy — currently single-tenant RLS).
+- `OPENAI_API_KEY` for AI images (code is ready; set it in Vercel **and** as a Supabase secret).
+- Community Management API approval for Company Page posting.
+- `/api/clients/draft` fetches any URL the user gives it; add private-IP/redirect guards (SSRF hardening).
+- Edge Functions accept any valid project JWT (including the public anon key); consider a shared-secret header from the cron jobs.
+- More platforms (Meta, X): `posts.platform` exists; previews already render.
+- Post analytics: blocked on the same LinkedIn API tier.
 
 ---
 
 ## 9. How to verify the system is healthy
 
 ```bash
-# 1. Build passes
-npx tsc --noEmit && npx next build
+npm test && npx tsc --noEmit && npm run lint && npm run build
 
-# 2. Cron jobs active (via Management API SQL):
-#    SELECT jobid, jobname, schedule, active FROM cron.job;
-#    Expect: generate-drafts-hourly, publish-posts-15min, both active=true
+# Cron jobs active, and recent runs (Management API SQL):
+#   select jobid, jobname, schedule, active from cron.job;
+#   select * from cron.job_run_details order by start_time desc limit 10;
 
-# 3. Recent cron executions:
-#    SELECT * FROM cron.job_run_details ORDER BY start_time DESC LIMIT 10;
+# RLS matches the migration:
+#   select tablename, policyname, cmd from pg_policies where schemaname in ('public','storage');
 
-# 4. Telegram webhook registered:
-curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"
-#    Expect url = https://socialigent.vercel.app/api/telegram/webhook
-
-# 5. End-to-end: dashboard → client → Generate Post → Telegram message arrives →
-#    tap Approve → post status becomes approved → Publish button → live on LinkedIn
+# Telegram webhook:
+curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/getWebhookInfo"   # url = …/api/telegram/webhook
 ```
 
-## 10. Deploy commands
+## 10. Deploy
 
 ```bash
-# Web app (or just push to master — GitHub integration auto-deploys)
-vercel --prod
-
-# Edge Functions
-SUPABASE_ACCESS_TOKEN=<token> npx supabase functions deploy <name> --project-ref qdpgfyfrpzrqwpzcuyju
-
-# Schema changes: run SQL via Management API (section 4), then add a matching
-# file to supabase/migrations/ so the repo stays the source of truth.
+git push origin master        # Vercel auto-deploys the app
+SUPABASE_ACCESS_TOKEN=<token> npx supabase functions deploy generate-drafts --project-ref qdpgfyfrpzrqwpzcuyju
+SUPABASE_ACCESS_TOKEN=<token> npx supabase functions deploy publish-posts  --project-ref qdpgfyfrpzrqwpzcuyju
+# Schema: run the migration SQL via the Management API (section 4).
 ```

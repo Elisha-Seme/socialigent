@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Socialigent
 
-## Getting Started
+Self-serve LinkedIn assistant. Claude drafts each post in your brand voice, you approve it in Telegram (or the dashboard), and it publishes on your schedule.
 
-First, run the development server:
+Live at https://socialigent.vercel.app. For architecture, production access and gotchas, read [HANDOFF.md](HANDOFF.md).
+
+## Stack
+
+Next.js 14 (App Router) · TypeScript · Tailwind v3 + hand-written shadcn components · Supabase (Postgres, Auth, Storage, Edge Functions, pg_cron) · Anthropic Claude · LinkedIn Posts API · Telegram Bot API · optional OpenAI image generation.
+
+## Develop
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+cp .env.example .env.local   # then fill in values (see HANDOFF.md §2)
+npm run dev                  # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Check
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+npm test            # unit tests (Vitest): publish lock, LinkedIn escaping, OAuth state, schedule, parsing
+npx tsc --noEmit    # app type-check
+npm run lint
+npm run build
+# Edge Functions (Deno) are outside the Next type-check:
+cd supabase/functions && npx deno@2 check --no-lock --node-modules-dir=none generate-drafts/index.ts publish-posts/index.ts
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Layout
 
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Path | What lives there |
+|---|---|
+| `app/` | Landing page, auth, onboarding, dashboard (`(dashboard)/`), API routes (`api/`) |
+| `lib/` | Server helpers: Supabase clients, AI pipeline, Telegram agent, LinkedIn OAuth, timezones |
+| `supabase/functions/_shared/` | Import-free modules shared by Next **and** the Deno Edge Functions (writing rules, schedule, LinkedIn publishing + lock, image generation, Telegram messages) |
+| `supabase/functions/` | `generate-drafts` (hourly) and `publish-posts` (every 15 min) |
+| `supabase/migrations/` | Schema + RLS, source of truth for production |
+| `tests/` | Vitest suites |

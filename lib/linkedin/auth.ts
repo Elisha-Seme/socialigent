@@ -1,11 +1,27 @@
+import { OAUTH_STATE_TTL_MS, newNonce, signState } from '@/lib/linkedin/state'
+
 const CLIENT_ID = process.env.LINKEDIN_CLIENT_ID!
 const CLIENT_SECRET = process.env.LINKEDIN_CLIENT_SECRET!
 const REDIRECT_URI = (process.env.NEXT_PUBLIC_APP_URL ?? '').trim() + '/api/linkedin/callback'
 
+// Default Tier "Share on LinkedIn" only. When Community Management API access
+// is approved, add 'w_organization_social' here and have users reconnect.
 const SCOPES = ['openid', 'profile', 'w_member_social']
 
-export function buildOAuthUrl(clientId: string): string {
-  const state = Buffer.from(JSON.stringify({ clientId })).toString('base64url')
+// HMAC key for the OAuth state. A dedicated secret is preferred; the LinkedIn
+// client secret is a server-only fallback so deploys work without a new env var.
+export function oauthStateSecret(): string {
+  const secret = (process.env.OAUTH_STATE_SECRET || CLIENT_SECRET || '').trim()
+  if (!secret) throw new Error('OAUTH_STATE_SECRET (or LINKEDIN_CLIENT_SECRET) is not configured')
+  return secret
+}
+
+export function buildOAuthUrl(opts: { clientId: string; userId: string }): { url: string; nonce: string } {
+  const nonce = newNonce()
+  const state = signState(
+    { clientId: opts.clientId, userId: opts.userId, nonce, exp: Date.now() + OAUTH_STATE_TTL_MS },
+    oauthStateSecret()
+  )
   const params = new URLSearchParams({
     response_type: 'code',
     client_id: CLIENT_ID,
@@ -13,7 +29,7 @@ export function buildOAuthUrl(clientId: string): string {
     state,
     scope: SCOPES.join(' '),
   })
-  return `https://www.linkedin.com/oauth/v2/authorization?${params}`
+  return { url: `https://www.linkedin.com/oauth/v2/authorization?${params}`, nonce }
 }
 
 export async function exchangeCodeForToken(code: string): Promise<{
@@ -36,12 +52,4 @@ export async function exchangeCodeForToken(code: string): Promise<{
     throw new Error(`LinkedIn token exchange failed: ${text}`)
   }
   return res.json()
-}
-
-export function parseOAuthState(state: string): { clientId: string } | null {
-  try {
-    return JSON.parse(Buffer.from(state, 'base64url').toString())
-  } catch {
-    return null
-  }
 }

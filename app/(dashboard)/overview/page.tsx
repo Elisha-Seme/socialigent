@@ -2,21 +2,17 @@ import Link from 'next/link'
 import { FileText, Clock, CheckCircle, Globe, Send } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { AnalyticsChart } from '@/components/dashboard/AnalyticsChart'
+import { Notice } from '@/components/dashboard/Notice'
+import { GeneratePostButton } from '@/components/clients/GeneratePostButton'
+import { StatusBadge } from '@/components/posts/StatusBadge'
+import { isDraftingPaused } from '@/lib/schedule'
 import type { Post, Client } from '@/lib/types'
 
 export const dynamic = 'force-dynamic'
 
-const statusVariant: Record<string, 'default' | 'secondary' | 'destructive' | 'outline'> = {
-  draft: 'outline',
-  pending_approval: 'secondary',
-  approved: 'default',
-  rejected: 'destructive',
-  published: 'default',
-  failed: 'destructive',
-}
+const DAY_MS = 86_400_000
 
 export default async function DashboardPage({
   searchParams,
@@ -44,47 +40,95 @@ export default async function DashboardPage({
 
   const linkedinConnected = !!client.linkedin_access_token
   const telegramConnected = !!client.telegram_chat_id
+  const tokenDaysLeft = client.linkedin_token_expires_at
+    ? Math.ceil((new Date(client.linkedin_token_expires_at).getTime() - Date.now()) / DAY_MS)
+    : null
+  const draftingPaused = client.is_active && isDraftingPaused(posts)
+
+  const reconnect = (
+    <Button size="sm" variant="outline" asChild>
+      <a href={`/api/linkedin/oauth?clientId=${client.id}`}>
+        <Globe className="mr-2 h-4 w-4" /> Reconnect LinkedIn
+      </a>
+    </Button>
+  )
 
   return (
     <div className="space-y-6">
       {searchParams.linkedin_connected && (
-        <div className="rounded-md border border-green-500 bg-green-50 px-4 py-3 text-sm text-green-700 dark:bg-green-950 dark:text-green-300">
-          LinkedIn connected successfully. Posts will now publish automatically.
-        </div>
+        <Notice tone="success" title="LinkedIn connected">
+          Approved posts will now publish automatically at their scheduled time.
+        </Notice>
       )}
       {searchParams.linkedin_error && (
-        <div className="rounded-md border border-destructive bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          LinkedIn error: {decodeURIComponent(searchParams.linkedin_error)}
-        </div>
+        <Notice tone="error" title="LinkedIn connection failed">
+          {/* Next has already decoded the query string; decoding again throws on '%'. */}
+          {String(searchParams.linkedin_error).slice(0, 300)}
+        </Notice>
       )}
 
-      <div className="flex items-center justify-between">
+      {linkedinConnected && tokenDaysLeft !== null && tokenDaysLeft <= 0 && (
+        <Notice tone="error" title="Your LinkedIn connection has expired" action={reconnect}>
+          Approved posts can&apos;t be published until you reconnect.
+        </Notice>
+      )}
+      {linkedinConnected && tokenDaysLeft !== null && tokenDaysLeft > 0 && tokenDaysLeft <= 14 && (
+        <Notice
+          tone="warning"
+          title={`LinkedIn connection expires in ${tokenDaysLeft} day${tokenDaysLeft === 1 ? '' : 's'}`}
+          action={reconnect}
+        >
+          LinkedIn tokens last about two months. Reconnecting takes a few seconds.
+        </Notice>
+      )}
+
+      {draftingPaused && (
+        <Notice
+          tone="paused"
+          title="Auto-drafting is paused"
+          action={
+            <Button size="sm" variant="outline" asChild>
+              <Link href="/posts?status=pending_approval">Review drafts</Link>
+            </Button>
+          }
+        >
+          Your last few drafts weren&apos;t reviewed before their slot, so we stopped writing new ones. Approve or reject
+          one and drafting resumes on the next slot.
+        </Notice>
+      )}
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">Dashboard</h1>
+        <GeneratePostButton clientId={client.id} />
       </div>
 
-      {/* Connection nudges */}
       {(!linkedinConnected || !telegramConnected) && (
-        <Card className="border-amber-400 bg-amber-50 dark:bg-amber-950">
-          <CardContent className="flex flex-wrap items-center gap-4 pt-4">
-            <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
-              Finish setting up to go fully autonomous:
-            </p>
-            {!linkedinConnected && (
-              <Button size="sm" asChild variant="outline">
-                <a href={`/api/linkedin/oauth?clientId=${client.id}`}>
-                  <Globe className="mr-2 h-4 w-4" /> Connect LinkedIn
-                </a>
-              </Button>
-            )}
-            {!telegramConnected && (
-              <Button size="sm" variant="outline" asChild>
-                <Link href="/settings">
-                  <Send className="mr-2 h-4 w-4" /> Connect Telegram
-                </Link>
-              </Button>
-            )}
-          </CardContent>
-        </Card>
+        <Notice
+          tone="warning"
+          title="Finish setting up to go fully autonomous"
+          action={
+            <div className="flex flex-wrap gap-2">
+              {!linkedinConnected && (
+                <Button size="sm" variant="outline" asChild>
+                  <a href={`/api/linkedin/oauth?clientId=${client.id}`}>
+                    <Globe className="mr-2 h-4 w-4" /> Connect LinkedIn
+                  </a>
+                </Button>
+              )}
+              {!telegramConnected && (
+                <Button size="sm" variant="outline" asChild>
+                  <Link href="/settings">
+                    <Send className="mr-2 h-4 w-4" /> Connect Telegram
+                  </Link>
+                </Button>
+              )}
+            </div>
+          }
+        >
+          {!telegramConnected
+            ? 'Without Telegram, new drafts only show up here, and you won’t get expiry or failure alerts.'
+            : 'Connect LinkedIn so approved posts can be published.'}
+        </Notice>
       )}
 
       {/* Stats */}
@@ -93,10 +137,10 @@ export default async function DashboardPage({
           <Card key={label}>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">{label}</CardTitle>
-              <Icon className="h-4 w-4 text-muted-foreground" />
+              <Icon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{value}</div>
+              <div className="text-2xl font-bold tabular-nums">{value}</div>
             </CardContent>
           </Card>
         ))}
@@ -104,7 +148,6 @@ export default async function DashboardPage({
 
       <AnalyticsChart posts={posts} />
 
-      {/* Pending approval */}
       {pending.length > 0 && (
         <Card>
           <CardHeader>
@@ -112,11 +155,7 @@ export default async function DashboardPage({
           </CardHeader>
           <CardContent className="space-y-2">
             {pending.slice(0, 5).map((post) => (
-              <Link
-                key={post.id}
-                href={`/posts/${post.id}`}
-                className="block rounded-md border p-3 text-sm hover:bg-muted"
-              >
+              <Link key={post.id} href={`/posts/${post.id}`} className="block rounded-md border p-3 text-sm hover:bg-muted">
                 <p className="line-clamp-2">{post.caption}</p>
               </Link>
             ))}
@@ -124,7 +163,6 @@ export default async function DashboardPage({
         </Card>
       )}
 
-      {/* Recent posts */}
       {posts.length > 0 && (
         <Card>
           <CardHeader>
@@ -138,9 +176,7 @@ export default async function DashboardPage({
                 className="flex items-center justify-between gap-4 rounded-md border p-3 text-sm hover:bg-muted"
               >
                 <p className="line-clamp-1 flex-1">{post.caption}</p>
-                <Badge variant={statusVariant[post.status]}>
-                  {post.status.replace('_', ' ')}
-                </Badge>
+                <StatusBadge status={post.status} />
               </Link>
             ))}
           </CardContent>
@@ -150,9 +186,9 @@ export default async function DashboardPage({
       {posts.length === 0 && (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-10 text-center">
-            <Clock className="h-10 w-10 text-muted-foreground" />
+            <Clock className="h-10 w-10 text-muted-foreground" aria-hidden="true" />
             <p className="text-muted-foreground">
-              The AI will generate your first posts based on your schedule. Check back soon.
+              The AI drafts posts for each slot in your schedule. Want one now? Use Generate post above.
             </p>
           </CardContent>
         </Card>

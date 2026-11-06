@@ -1,105 +1,39 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { publishLinkedInPost } from '@/lib/linkedin/publish'
+import { publishPost, type PublishFailureCode } from '@/lib/linkedin/publish'
+import { jsonError, readJson, requireUser } from '@/lib/api/session'
 
 export const maxDuration = 60
 
-export async function POST(request: NextRequest) {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+const STATUS_FOR: Record<PublishFailureCode, number> = {
+  not_found: 404,
+  not_publishable: 409,
+  already_claimed: 409,
+  not_connected: 400,
+  token_expired: 400,
+  invalid_image: 422,
+  linkedin_error: 502,
+}
 
-  const { postId } = await request.json()
-  if (!postId) return NextResponse.json({ error: 'Missing postId' }, { status: 400 })
+export async function POST(request: Request) {
+  const session = await requireUser()
+  if (!session.ok) return session.response
 
-  const admin = createAdminClient()
+  const { postId } = await readJson(request)
+  if (typeof postId !== 'string' || !postId) return jsonError('Missing postId', 400)
 
-  const { data: post, error: postError } = await admin
-    .from('posts')
-    .select('*, clients(*)')
-    .eq('id', postId)
-    .single()
+  // Ownership: RLS only lets the user see their own brand's posts.
+  const { data: owned } = await session.supabase.from('posts').select('id').eq('id', postId).maybeSingle()
+  if (!owned) return jsonError('Post not found', 404)
 
-  if (postError || !post) {
-    return NextResponse.json({ error: 'Post not found' }, { status: 404 })
-  }
+  // The publish flow needs the LinkedIn token, so it runs with the service role.
+  const result = await publishPost(createAdminClient(), {
+    postId,
+    allowedFrom: ['approved', 'failed'],
+    actor: 'dashboard',
+    storageBaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? '',
+  })
 
-  if (post.status !== 'approved') {
-    return NextResponse.json({ error: `Post is ${post.status}, must be approved` }, { status: 400 })
-  }
-
-  const client = post.clients
-  if (!client.linkedin_access_token || (!client.linkedin_page_id && !client.linkedin_person_id)) {
-    return NextResponse.json({ error: 'Client LinkedIn not connected' }, { status: 400 })
-  }
-
-  // Check token expiry
-  if (client.linkedin_token_expires_at) {
-    const expiresAt = new Date(client.linkedin_token_expires_at)
-    if (expiresAt < new Date()) {
-      return NextResponse.json({ error: 'LinkedIn token expired, reconnect in client settings' }, { status: 400 })
-    }
-  }
-
-  // Mark as publishing to prevent double-publish
-  await admin
-    .from('posts')
-    .update({ status: 'failed', error_message: 'Publishing in progress...', updated_at: new Date().toISOString() })
-    .eq('id', postId)
-    .eq('status', 'approved')
-
-  try {
-    const { postId: linkedInPostId, postedAs } = await publishLinkedInPost({
-      pageId: client.linkedin_page_id,
-      personId: client.linkedin_person_id,
-      token: client.linkedin_access_token,
-      caption: post.caption,
-      imageUrl: post.image_url,
-    })
-
-    const now = new Date().toISOString()
-    await admin
-      .from('posts')
-      .update({
-        status: 'published',
-        linkedin_post_id: linkedInPostId,
-        published_at: now,
-        error_message: null,
-        updated_at: now,
-      })
-      .eq('id', postId)
-
-    await admin.from('post_history').insert({
-      post_id: postId,
-      previous_status: 'approved',
-      new_status: 'published',
-      changed_by: `user:${user.id}`,
-      note: `Published to LinkedIn as ${postedAs === 'organization' ? `page ${client.linkedin_page_id}` : 'personal profile'}`,
-    })
-
-    return NextResponse.json({ ok: true, linkedInPostId, postedAs })
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error'
-
-    await admin
-      .from('posts')
-      .update({
-        status: 'failed',
-        error_message: message,
-        retry_count: (post.retry_count ?? 0) + 1,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', postId)
-
-    await admin.from('post_history').insert({
-      post_id: postId,
-      previous_status: 'approved',
-      new_status: 'failed',
-      changed_by: `user:${user.id}`,
-      note: message,
-    })
-
-    return NextResponse.json({ error: message }, { status: 500 })
-  }
+  if (!result.ok) return jsonError(result.message, STATUS_FOR[result.code])
+  return NextResponse.json({ ok: true, linkedInPostId: result.postUrn, postedAs: result.postedAs })
 }

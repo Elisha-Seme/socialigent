@@ -1,60 +1,52 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
+import { jsonError, readJson, requireUser } from '@/lib/api/session'
+import { PUBLIC_CLIENT_COLUMNS, parseBrandInput } from '@/lib/clients'
 
 type Params = { params: { id: string } }
 
-export async function GET(_request: Request, { params }: Params) {
-  const supabase = await createClient()
-  const { data, error } = await supabase
-    .from('clients')
-    .select('*')
-    .eq('id', params.id)
-    .single()
+// All three handlers run as the signed-in user, so RLS limits them to their
+// own brand.
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 404 })
-  }
+export async function GET(_request: Request, { params }: Params) {
+  const session = await requireUser()
+  if (!session.ok) return session.response
+
+  const { data } = await session.supabase
+    .from('clients')
+    .select(PUBLIC_CLIENT_COLUMNS)
+    .eq('id', params.id)
+    .maybeSingle()
+
+  if (!data) return jsonError('Brand not found', 404)
   return NextResponse.json(data)
 }
 
 export async function PATCH(request: Request, { params }: Params) {
-  const supabase = await createClient()
-  const body = await request.json()
+  const session = await requireUser()
+  if (!session.ok) return session.response
 
-  const allowed = [
-    'name',
-    'brand_voice',
-    'content_pillars',
-    'linkedin_page_id',
-    'telegram_chat_id',
-    'posting_schedule',
-    'is_active',
-  ] as const
+  const parsed = parseBrandInput(await readJson(request), { partial: true })
+  if (!parsed.ok) return jsonError(parsed.error, 400)
 
-  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() }
-  for (const key of allowed) {
-    if (key in body) updates[key] = body[key]
-  }
-
-  const { data, error } = await supabase
+  const { data, error } = await session.supabase
     .from('clients')
-    .update(updates)
+    .update({ ...parsed.values, updated_at: new Date().toISOString() })
     .eq('id', params.id)
-    .select()
-    .single()
+    .select(PUBLIC_CLIENT_COLUMNS)
+    .maybeSingle()
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+  if (error) return jsonError(error.message, 500)
+  if (!data) return jsonError('Brand not found', 404)
   return NextResponse.json(data)
 }
 
 export async function DELETE(_request: Request, { params }: Params) {
-  const supabase = await createClient()
-  const { error } = await supabase.from('clients').delete().eq('id', params.id)
+  const session = await requireUser()
+  if (!session.ok) return session.response
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
+  const { data, error } = await session.supabase.from('clients').delete().eq('id', params.id).select('id')
+
+  if (error) return jsonError(error.message, 500)
+  if (!data?.length) return jsonError('Brand not found', 404)
   return NextResponse.json({ success: true })
 }

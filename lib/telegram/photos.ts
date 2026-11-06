@@ -1,7 +1,13 @@
-import { randomUUID } from 'crypto'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { storeImageBytes } from '@/lib/storage/images'
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN!
+
+const IMAGE_TYPES: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+}
 
 // Download a photo from Telegram and upload it to Supabase Storage.
 // Returns the public URL, or null if anything fails.
@@ -27,20 +33,11 @@ export async function saveTelegramPhoto(
     const buffer = await dlRes.arrayBuffer()
 
     // Step 3: upload to Supabase Storage
-    const ext = filePath.split('.').pop() ?? 'jpg'
-    const path = `${clientId}/${randomUUID()}.${ext}`
-    const supabase = createAdminClient()
-    const { data, error } = await supabase.storage
-      .from('post-images')
-      .upload(path, buffer, { contentType: 'image/jpeg', upsert: false })
+    const ext = (filePath.split('.').pop() ?? 'jpg').toLowerCase()
+    const contentType = IMAGE_TYPES[ext]
+    if (!contentType) return null
 
-    if (error || !data) return null
-
-    const { data: { publicUrl } } = supabase.storage
-      .from('post-images')
-      .getPublicUrl(data.path)
-
-    return publicUrl
+    return await storeImageBytes({ bytes: buffer, clientId, extension: ext, contentType })
   } catch {
     return null
   }

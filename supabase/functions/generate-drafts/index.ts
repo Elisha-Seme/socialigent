@@ -1,248 +1,170 @@
-// Supabase Edge Function — runs hourly via cron
-// Checks each active client's posting schedule and generates posts when a slot is upcoming.
+// Supabase Edge Function: runs hourly via pg_cron.
+// For each active brand with a posting slot in the next hour, drafts a post,
+// queues it for approval, and sends it to the brand's Telegram chat.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import Anthropic from 'npm:@anthropic-ai/sdk@0.40'
-import OpenAI from 'npm:openai@4'
+import {
+  CAPTION_MODEL,
+  POST_SYSTEM_PROMPT,
+  buildPostPrompt,
+  isDraftingPaused,
+  nextSlotDate,
+  parsePostResponse,
+} from '../_shared/content.ts'
+import { generateImage } from '../_shared/image.ts'
+import { buildApprovalMessage, telegramCall } from '../_shared/telegram.ts'
 
-const supabase = createClient(
-  Deno.env.get('SUPABASE_URL')!,
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-)
-
+const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 const anthropic = new Anthropic({ apiKey: Deno.env.get('ANTHROPIC_API_KEY')! })
 
-const openai = Deno.env.get('OPENAI_API_KEY')
-  ? new OpenAI({ apiKey: Deno.env.get('OPENAI_API_KEY')! })
-  : null
+const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')
+const IMAGE_MODEL = Deno.env.get('OPENAI_IMAGE_MODEL') || undefined
+const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN')
+const APP_URL = Deno.env.get('NEXT_PUBLIC_APP_URL') || 'https://socialigent.vercel.app'
 
-const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+const SLOT_WINDOW_MS = 60 * 60 * 1000 // look one hour ahead (matches the cron)
+const SLOT_TOLERANCE_MS = 15 * 60 * 1000
+const CONCURRENCY = 4
 
-// Keep in sync with lib/ai/style.ts (this Deno function can't import from lib/)
-const HUMAN_WRITING_RULES = `
-WRITING STYLE — the post must read like a busy professional typed it themselves, not like AI. Follow ALL of these:
-- NEVER use em dashes (—) or en dashes (–). Use a comma, a period, or a plain hyphen instead.
-- Banned words/phrases: delve, unlock, unleash, leverage, elevate, empower, harness, foster, robust, seamless, game-changer, game changing, cutting-edge, transformative, revolutionize, navigate the landscape, in today's fast-paced world, in the ever-evolving, look no further, dive in, let's explore, here's the thing, let that sink in, read that again, the best part?, but here's the kicker.
-- NEVER use the "It's not just X, it's Y" or "X isn't about Y. It's about Z." sentence pattern.
-- No rhetorical-question hooks ("Ever wondered...?", "What if I told you...?"). Open with a concrete statement, observation, or short story instead.
-- No engagement bait endings: no "Thoughts?", "Agree?", "Let me know in the comments", "Drop a 👇". End with a plain takeaway or a genuine, specific question.
-- No emoji bullet lists (🚀 ✅ 💡 as bullets). At most 1 emoji in the whole post, or none.
-- No "Punchy. One. Word. Sentences." and no three-part slogan patterns ("Faster. Smarter. Better.").
-- Vary sentence length naturally. Use contractions (it's, don't, we're). Plain everyday words over corporate vocabulary.
-- Be specific and concrete: real situations, numbers, examples. Cut empty filler sentences that could apply to any company.
-- Hashtags: 2-3 maximum, specific to the topic (not #Success #Motivation #Growth), placed on the last line.`
-
-const MARKER_REPLACEMENTS: Array<[RegExp, string]> = [
-  [/\s*—\s*/g, ' - '],
-  [/(?<=\d)\s*–\s*(?=\d)/g, '-'],
-  [/\s*–\s*/g, ' - '],
-  [/[“”]/g, '"'],
-  [/[‘’]/g, "'"],
-  [/…/g, '...'],
-]
-
-function stripAiMarkers(text: string): string {
-  let out = text
-  for (const [pattern, replacement] of MARKER_REPLACEMENTS) {
-    out = out.replace(pattern, replacement)
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i])
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
   return out
 }
 
-function nextSlotDate(schedule: Array<{ day: string; time: string }>, from: Date): Date | null {
-  if (!schedule.length) return null
-  const fromDay = from.getDay()
-  const fromMinutes = from.getHours() * 60 + from.getMinutes()
-  let best: Date | null = null
-
-  for (const slot of schedule) {
-    const slotDay = DAYS.indexOf(slot.day)
-    if (slotDay === -1) continue
-    const [h, m] = slot.time.split(':').map(Number)
-    const slotMinutes = h * 60 + m
-
-    let daysAhead = slotDay - fromDay
-    if (daysAhead < 0 || (daysAhead === 0 && slotMinutes <= fromMinutes)) {
-      daysAhead += 7
-    }
-
-    const candidate = new Date(from)
-    candidate.setDate(candidate.getDate() + daysAhead)
-    candidate.setHours(h, m, 0, 0)
-
-    if (!best || candidate < best) best = candidate
-  }
-  return best
+interface ClientRow {
+  id: string
+  name: string
+  brand_voice: string
+  content_pillars: string[] | null
+  posting_schedule: unknown
+  telegram_chat_id: string | null
 }
 
-Deno.serve(async (_req) => {
+async function draftForClient(client: ClientRow, now: Date): Promise<string> {
+  const nextSlot = nextSlotDate(client.posting_schedule, now)
+  if (!nextSlot || nextSlot.getTime() > now.getTime() + SLOT_WINDOW_MS) return 'no_slot_due'
+
+  // Already have a post for this slot?
+  const { data: existing } = await supabase
+    .from('posts')
+    .select('id')
+    .eq('client_id', client.id)
+    .gte('scheduled_at', new Date(nextSlot.getTime() - SLOT_TOLERANCE_MS).toISOString())
+    .lte('scheduled_at', new Date(nextSlot.getTime() + SLOT_TOLERANCE_MS).toISOString())
+    .in('status', ['draft', 'pending_approval', 'approved', 'publishing', 'published'])
+    .limit(1)
+  if (existing?.length) return 'slot_filled'
+
+  const { data: recent } = await supabase
+    .from('posts')
+    .select('caption, status, scheduled_at')
+    .eq('client_id', client.id)
+    .order('created_at', { ascending: false })
+    .limit(5)
+
+  // Nobody reviewed the last few drafts: stop spending on new ones.
+  if (isDraftingPaused(recent ?? [], now)) return 'paused:unreviewed_drafts'
+
+  const msg = await anthropic.messages.create({
+    model: CAPTION_MODEL,
+    max_tokens: 1536,
+    system: POST_SYSTEM_PROMPT,
+    messages: [
+      {
+        role: 'user',
+        content: buildPostPrompt(client, {
+          recentCaptions: (recent ?? []).map((p: { caption: string }) => p.caption).filter(Boolean),
+        }),
+      },
+    ],
+  })
+  const raw = msg.content.map((b: { type: string; text?: string }) => (b.type === 'text' ? b.text ?? '' : '')).join('')
+  const { captions, imagePrompt } = parsePostResponse(raw)
+
+  // AI image (optional; failures never block the draft)
+  let imageUrl: string | null = null
+  let imageError: string | null = null
+  if (OPENAI_API_KEY && imagePrompt) {
+    try {
+      const image = await generateImage({ apiKey: OPENAI_API_KEY, prompt: imagePrompt, model: IMAGE_MODEL })
+      const path = `${client.id}/${crypto.randomUUID()}.${image.extension}`
+      const { error: uploadError } = await supabase.storage
+        .from('post-images')
+        .upload(path, image.bytes, { contentType: image.contentType, upsert: false })
+      if (uploadError) throw new Error(uploadError.message)
+      imageUrl = supabase.storage.from('post-images').getPublicUrl(path).data.publicUrl
+    } catch (err) {
+      imageError = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  const { data: post, error: insertError } = await supabase
+    .from('posts')
+    .insert({
+      client_id: client.id,
+      caption: captions[0],
+      caption_variations: captions,
+      image_prompt: imagePrompt || null,
+      image_url: imageUrl,
+      platform: 'linkedin',
+      status: 'pending_approval',
+      scheduled_at: nextSlot.toISOString(),
+      error_message: imageError,
+    })
+    .select('id, caption, image_url')
+    .single()
+  if (insertError || !post) throw new Error(`insert failed: ${insertError?.message}`)
+
+  const { error: historyError } = await supabase.from('post_history').insert({
+    post_id: post.id,
+    previous_status: 'draft',
+    new_status: 'pending_approval',
+    changed_by: 'edge_function:generate-drafts',
+    note: 'Generated for the next posting slot',
+  })
+  if (historyError) console.error('post_history insert failed:', historyError.message)
+
+  if (BOT_TOKEN && client.telegram_chat_id) {
+    const { method, body } = buildApprovalMessage({
+      chatId: client.telegram_chat_id,
+      brandName: client.name,
+      post,
+      appUrl: APP_URL,
+    })
+    await telegramCall(BOT_TOKEN, method, body)
+  }
+
+  return 'generated'
+}
+
+Deno.serve(async () => {
   const now = new Date()
-  const windowEnd = new Date(now.getTime() + 60 * 60 * 1000) // 1 hour ahead
 
   const { data: clients, error } = await supabase
     .from('clients')
-    .select('*')
+    .select('id, name, brand_voice, content_pillars, posting_schedule, telegram_chat_id')
     .eq('is_active', true)
 
-  if (error) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 })
-  }
+  if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 })
 
-  const results: Array<{ clientId: string; status: string }> = []
-
-  for (const client of clients ?? []) {
-    if (!client.posting_schedule?.length) continue
-
-    const nextSlot = nextSlotDate(client.posting_schedule, now)
-    if (!nextSlot || nextSlot > windowEnd) continue
-
-    // Check if there's already a post scheduled for this slot
-    const slotStart = new Date(nextSlot.getTime() - 15 * 60 * 1000).toISOString()
-    const slotEnd = new Date(nextSlot.getTime() + 15 * 60 * 1000).toISOString()
-
-    const { data: existing } = await supabase
-      .from('posts')
-      .select('id')
-      .eq('client_id', client.id)
-      .gte('scheduled_at', slotStart)
-      .lte('scheduled_at', slotEnd)
-      .in('status', ['draft', 'pending_approval', 'approved', 'published'])
-      .limit(1)
-
-    if (existing?.length) {
-      results.push({ clientId: client.id, status: 'slot_filled' })
-      continue
-    }
-
-    // Fetch recent captions to avoid repeating topics
-    const { data: recentPosts } = await supabase
-      .from('posts')
-      .select('caption')
-      .eq('client_id', client.id)
-      .order('created_at', { ascending: false })
-      .limit(5)
-
-    const recentCaptions = (recentPosts ?? [])
-      .map((p: { caption: string }) => p.caption)
-      .filter(Boolean)
-
-    const dupeGuard = recentCaptions.length > 0
-      ? `\n\nDO NOT write about the same topics or themes as these recent posts:\n${recentCaptions.map((c: string, i: number) => `[${i + 1}]: ${c.slice(0, 150)}…`).join('\n')}`
-      : ''
-
-    // Generate content with Claude
-    const prompt = `You are a LinkedIn content strategist. Generate a LinkedIn post for this brand.
-Brand: ${client.name}
-Voice: ${client.brand_voice}
-Content pillars: ${(client.content_pillars ?? []).join(', ')}${dupeGuard}
-${HUMAN_WRITING_RULES}
-
-Respond ONLY with a JSON object like this (no markdown fences):
-{"caption":"...","imagePrompt":"..."}`
-
-    let caption = ''
-    let imagePrompt = ''
+  // Brands share popular slots (onboarding defaults to 06:00 UTC), so draft a
+  // few at a time rather than one after another, and isolate failures.
+  const results = await mapWithConcurrency((clients ?? []) as ClientRow[], CONCURRENCY, async (client) => {
     try {
-      const msg = await anthropic.messages.create({
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 1024,
-        messages: [{ role: 'user', content: prompt }],
-      })
-      const raw = msg.content[0].type === 'text' ? msg.content[0].text : ''
-      const cleaned = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
-      const parsed = JSON.parse(cleaned)
-      caption = stripAiMarkers(parsed.caption ?? '')
-      imagePrompt = parsed.imagePrompt ?? ''
+      return { clientId: client.id, status: await draftForClient(client, now) }
     } catch (err) {
-      results.push({ clientId: client.id, status: `claude_error: ${err}` })
-      continue
+      return { clientId: client.id, status: `error: ${err instanceof Error ? err.message : String(err)}` }
     }
-
-    // Generate image with DALL-E if available
-    let imageUrl: string | null = null
-    if (openai && imagePrompt) {
-      try {
-        const imgRes = await openai.images.generate({
-          model: 'dall-e-3',
-          prompt: imagePrompt,
-          size: '1792x1024',
-          quality: 'standard',
-          n: 1,
-        })
-        const tempUrl = imgRes.data[0].url
-        if (tempUrl) {
-          // Download and re-upload to Supabase Storage
-          const imgFetch = await fetch(tempUrl)
-          const buffer = await imgFetch.arrayBuffer()
-          const { randomUUID } = crypto
-          const fileId = randomUUID()
-          const { data: upload, error: uploadError } = await supabase.storage
-            .from('post-images')
-            .upload(`${client.id}/${fileId}.png`, buffer, { contentType: 'image/png', upsert: false })
-
-          if (!uploadError && upload) {
-            const { data: { publicUrl } } = supabase.storage.from('post-images').getPublicUrl(upload.path)
-            imageUrl = publicUrl
-          }
-        }
-      } catch {
-        // Image generation failed — continue with text-only post
-      }
-    }
-
-    // Insert post
-    const { data: post, error: insertError } = await supabase
-      .from('posts')
-      .insert({
-        client_id: client.id,
-        caption,
-        image_prompt: imagePrompt || null,
-        image_url: imageUrl,
-        platform: 'linkedin',
-        status: 'pending_approval',
-        scheduled_at: nextSlot.toISOString(),
-      })
-      .select()
-      .single()
-
-    if (insertError || !post) {
-      results.push({ clientId: client.id, status: `insert_error: ${insertError?.message}` })
-      continue
-    }
-
-    await supabase.from('post_history').insert({
-      post_id: post.id,
-      previous_status: null,
-      new_status: 'pending_approval',
-      changed_by: 'edge_function:generate-drafts',
-    })
-
-    // Send Telegram notification if configured
-    const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN')
-    if (botToken && client.telegram_chat_id) {
-      const appUrl = Deno.env.get('NEXT_PUBLIC_APP_URL') ?? ''
-      const msgCaption =
-        `📝 New post for ${client.name}\n\n${caption.slice(0, 900)}\n\n👉 ${appUrl}/posts/${post.id}`
-      const replyMarkup = {
-        inline_keyboard: [[
-          { text: '✅ Approve', callback_data: `approve:${post.id}` },
-          { text: '❌ Reject', callback_data: `reject:${post.id}` },
-          { text: '✏️ Edit', callback_data: `edit:${post.id}` },
-        ]],
-      }
-      const endpoint = imageUrl ? 'sendPhoto' : 'sendMessage'
-      const body = imageUrl
-        ? { chat_id: client.telegram_chat_id, photo: imageUrl, caption: msgCaption, reply_markup: replyMarkup }
-        : { chat_id: client.telegram_chat_id, text: msgCaption, reply_markup: replyMarkup }
-      await fetch(`https://api.telegram.org/bot${botToken}/${endpoint}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      }).catch(() => {})
-    }
-
-    results.push({ clientId: client.id, status: 'generated' })
-  }
+  })
 
   return new Response(JSON.stringify({ processed: results }), {
     headers: { 'Content-Type': 'application/json' },

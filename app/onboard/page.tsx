@@ -76,11 +76,13 @@ export default function OnboardPage() {
         brand_voice: brandVoice,
         content_pillars: pillars.split(',').map((p) => p.trim()).filter(Boolean),
         posting_schedule: schedule,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
         generate_sample: true,
       }),
     })
     const body = await res.json().catch(() => ({}))
-    if (!res.ok) {
+    // 409 + id: the brand was already created (e.g. a retry), so carry on.
+    if (!res.ok && !(res.status === 409 && body.id)) {
       setSaveError(body.error ?? 'Something went wrong')
       setSaving(false)
       return
@@ -143,7 +145,7 @@ export default function OnboardPage() {
                 {draftError && <p className="text-xs text-destructive">{draftError}</p>}
                 {draftDone && (
                   <p className="flex items-center gap-1 text-xs text-green-600">
-                    <Check className="h-3 w-3" /> Filled in below — review and tweak.
+                    <Check className="h-3 w-3" /> Filled in below. Review and tweak.
                   </p>
                 )}
               </CardContent>
@@ -273,7 +275,7 @@ export default function OnboardPage() {
             </Card>
 
             <Button variant="outline" className="w-full" onClick={() => router.push('/overview')}>
-              Skip for now — go to dashboard
+              Skip for now and go to the dashboard
             </Button>
           </div>
         )}

@@ -15,6 +15,7 @@ const MONTHS = [
 const STATUS_HEX: Record<string, string> = {
   pending_approval: '#F59E0B',
   approved: '#3B82F6',
+  publishing: '#6366F1',
   published: '#16A34A',
   rejected: '#EF4444',
   failed: '#EF4444',

@@ -1,5 +1,5 @@
 export const metadata = {
-  title: 'Privacy Policy — Socialigent',
+  title: 'Privacy Policy | Socialigent',
 }
 
 export default function PrivacyPage() {

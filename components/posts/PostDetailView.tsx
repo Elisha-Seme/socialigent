@@ -58,11 +58,11 @@ export function PostDetailView({
         <CardHeader>
           <CardTitle className="text-base">
             {post.clients ? (
-              <Link href={`/clients/${post.clients.id}`} className="hover:underline">
+              <Link href="/settings" className="hover:underline">
                 {post.clients.name}
               </Link>
             ) : (
-              'Unknown client'
+              'Unknown brand'
             )}{' '}
             · LinkedIn
           </CardTitle>
@@ -150,6 +150,11 @@ export function PostDetailView({
         />
       )}
       {canPublish && <PublishButton postId={post.id} />}
+      {post.status === 'publishing' && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Publishing to LinkedIn now. Refresh in a moment to see the result.
+        </p>
+      )}
       {post.status === 'rejected' && <RegenerateButton postId={post.id} />}
 
       {/* Timeline Section */}

@@ -112,7 +112,7 @@ export function ApproveRejectButtons({
             <DialogTitle>Reject this post?</DialogTitle>
           </DialogHeader>
           <Textarea
-            placeholder="Reason (optional) — helps the AI improve future drafts"
+            placeholder="Reason (optional). It helps the AI improve the next draft"
             value={reason}
             onChange={(e) => setReason(e.target.value)}
             rows={3}

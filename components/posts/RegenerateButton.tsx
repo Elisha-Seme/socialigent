@@ -28,8 +28,8 @@ export function RegenerateButton({ postId }: { postId: string }) {
     toast.promise(
       promise,
       {
-        loading: 'Regenerating post with rejection feedback (10-15s)...',
-        success: 'Post regenerated successfully! Sent to Telegram.',
+        loading: 'Rewriting with your feedback (10-20s)...',
+        success: 'New draft ready for review.',
         error: (err) => err.message || 'Failed to regenerate post.',
       },
       {

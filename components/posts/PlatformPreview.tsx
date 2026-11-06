@@ -284,7 +284,7 @@ function XMock({ name, caption, imageUrl }: MockProps) {
 
       {overLimit && (
         <p className="border-t border-gray-200 bg-amber-50 px-4 py-2 text-xs text-amber-700">
-          {caption.length}/280 characters — this would need X Premium or trimming to post on X.
+          {caption.length}/280 characters. This would need X Premium or trimming to post on X.
         </p>
       )}
     </div>
@@ -330,7 +330,7 @@ export function PlatformPreview({
           ))}
         </div>
         <span className="text-[10px] text-muted-foreground">
-          Preview only — publishing goes to LinkedIn
+          Preview only. Publishing goes to LinkedIn
         </span>
       </div>
 

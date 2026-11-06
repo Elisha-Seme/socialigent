@@ -1,276 +1,118 @@
-// Supabase Edge Function — runs every 15 minutes via cron
-// Publishes approved posts whose scheduled_at time has passed.
+// Supabase Edge Function: runs every 15 minutes via pg_cron.
+// 1. Recovers posts stuck in 'publishing' after a crash (and alerts).
+// 2. Once a day, warns brands whose LinkedIn connection is about to expire.
+// 3. Publishes approved posts whose scheduled time has passed.
 
 import { createClient } from 'npm:@supabase/supabase-js@2'
+import { publishPost, recoverStalePublishing } from '../_shared/linkedin.ts'
+import { escapeHtml, telegramCall } from '../_shared/telegram.ts'
 
-const supabase = createClient(
-  Deno.env.get('SUPABASE_URL')!,
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
-)
+const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
-const LI_VERSION = '202501'
+const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN')
+const APP_URL = (Deno.env.get('NEXT_PUBLIC_APP_URL') || 'https://socialigent.vercel.app').trim().replace(/\/$/, '')
+const DAY_MS = 24 * 60 * 60 * 1000
+const BATCH_SIZE = 10
 
-async function registerImageUpload(
-  authorUrn: string,
-  token: string,
-): Promise<{ uploadUrl: string; assetUrn: string }> {
-  const res = await fetch('https://api.linkedin.com/v2/assets?action=registerUpload', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'LinkedIn-Version': LI_VERSION,
-      'X-Restli-Protocol-Version': '2.0.0',
-    },
-    body: JSON.stringify({
-      registerUploadRequest: {
-        owner: authorUrn,
-        recipes: ['urn:li:digitalmediaRecipe:feedshare-image'],
-        serviceRelationships: [{ identifier: 'urn:li:userGeneratedContent', relationshipType: 'OWNER' }],
-        supportedUploadMechanism: ['SYNCHRONOUS_UPLOAD'],
-      },
-    }),
+async function alert(chatId: string | null, html: string) {
+  if (!BOT_TOKEN || !chatId) return
+  await telegramCall(BOT_TOKEN, 'sendMessage', {
+    chat_id: chatId,
+    text: html,
+    parse_mode: 'HTML',
+    disable_web_page_preview: true,
   })
-  if (!res.ok) throw new Error(`registerUpload failed: ${await res.text()}`)
-  const json = await res.json()
-  const mech = json.value.uploadMechanism['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest']
-  return { uploadUrl: mech.uploadUrl, assetUrn: json.value.asset }
 }
 
-async function publishAs(authorUrn: string, token: string, caption: string, imageUrl: string | null): Promise<string> {
-  let media: unknown[] = []
+async function brandFor(clientId: string): Promise<{ name: string; telegram_chat_id: string | null } | null> {
+  const { data } = await supabase.from('clients').select('name, telegram_chat_id').eq('id', clientId).maybeSingle()
+  return data
+}
 
-  if (imageUrl) {
-    const imgRes = await fetch(imageUrl)
-    if (!imgRes.ok) throw new Error('Failed to fetch post image')
-    const buffer = await imgRes.arrayBuffer()
+// Daily at ~09:00 UTC: warn from 7 days before expiry until 7 days after.
+async function alertExpiringTokens(now: Date) {
+  const { data: clients } = await supabase
+    .from('clients')
+    .select('name, telegram_chat_id, linkedin_token_expires_at')
+    .eq('is_active', true)
+    .not('linkedin_token_expires_at', 'is', null)
+    .not('telegram_chat_id', 'is', null)
 
-    const { uploadUrl, assetUrn } = await registerImageUpload(authorUrn, token)
-    await fetch(uploadUrl, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/octet-stream',
-        'LinkedIn-Version': LI_VERSION,
-      },
-      body: buffer,
-    })
-    media = [{ status: 'READY', description: { text: '' }, media: assetUrn, title: { text: '' } }]
+  for (const client of clients ?? []) {
+    const daysLeft = Math.ceil((new Date(client.linkedin_token_expires_at).getTime() - now.getTime()) / DAY_MS)
+    if (daysLeft > 7 || daysLeft < -7) continue
+
+    const when =
+      daysLeft > 0
+        ? `expires in <b>${daysLeft} day${daysLeft === 1 ? '' : 's'}</b>`
+        : `<b>has expired</b>, so scheduled posts can't be published`
+    await alert(
+      client.telegram_chat_id,
+      `⚠️ <b>LinkedIn connection</b> for <b>${escapeHtml(client.name)}</b> ${when}.\n\n👉 <a href="${APP_URL}/settings">Reconnect in Settings</a>`
+    )
   }
-
-  const shareContent = media.length
-    ? { shareCommentary: { text: caption }, shareMediaCategory: 'IMAGE', media }
-    : { shareCommentary: { text: caption }, shareMediaCategory: 'NONE' }
-
-  const res = await fetch('https://api.linkedin.com/v2/ugcPosts', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'LinkedIn-Version': LI_VERSION,
-      'X-Restli-Protocol-Version': '2.0.0',
-    },
-    body: JSON.stringify({
-      author: authorUrn,
-      lifecycleState: 'PUBLISHED',
-      specificContent: { 'com.linkedin.ugc.ShareContent': shareContent },
-      visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' },
-    }),
-  })
-  if (!res.ok) throw new Error(`LinkedIn publish failed: ${await res.text()}`)
-  return res.headers.get('x-restli-id') ?? res.headers.get('location') ?? ''
 }
 
-// Page first, personal profile as fallback (page posting needs LinkedIn approval).
-async function publishPost(opts: {
-  pageId: string | null
-  personId: string | null
-  token: string
-  caption: string
-  imageUrl: string | null
-}): Promise<string> {
-  const { pageId, personId, token, caption, imageUrl } = opts
-
-  if (pageId) {
-    try {
-      return await publishAs(`urn:li:organization:${pageId}`, token, caption, imageUrl)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (!(msg.includes('ACCESS_DENIED') || msg.includes('403')) || !personId) throw err
-    }
-  }
-
-  if (!personId) throw new Error('No LinkedIn author available. Reconnect LinkedIn.')
-  return await publishAs(`urn:li:person:${personId}`, token, caption, imageUrl)
-}
-
-Deno.serve(async (_req) => {
+Deno.serve(async () => {
   const now = new Date()
-  const nowStr = now.toISOString()
-
-  // Daily alert check for expiring LinkedIn tokens (around 09:00 UTC)
-  const currentHour = now.getUTCHours()
-  const currentMinute = now.getUTCMinutes()
-  if (currentHour === 9 && currentMinute < 15) {
-    try {
-      const { data: clients } = await supabase
-        .from('clients')
-        .select('*')
-        .eq('is_active', true)
-
-      for (const client of clients ?? []) {
-        if (client.linkedin_token_expires_at) {
-          const expiresAt = new Date(client.linkedin_token_expires_at)
-          const diffTime = expiresAt.getTime() - now.getTime()
-          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24))
-
-          if (diffDays <= 7 && diffDays > 0) {
-            const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN')
-            if (botToken && client.telegram_chat_id) {
-              const escapeHtml = (str: string) =>
-                str
-                  .replace(/&/g, '&amp;')
-                  .replace(/</g, '&lt;')
-                  .replace(/>/g, '&gt;')
-                  .replace(/"/g, '&quot;')
-                  .replace(/'/g, '&#039;')
-
-              const appUrl = Deno.env.get('NEXT_PUBLIC_APP_URL') || 'https://socialigent.vercel.app'
-              const text = `⚠️ <b>LinkedIn Token Expiring Soon</b> for client <b>${escapeHtml(client.name)}</b>.\n\nExpires in <b>${diffDays} day${diffDays !== 1 ? 's' : ''}</b>.\n\n👉 <a href="${appUrl}/api/linkedin/oauth?clientId=${client.id}">Click here to Reconnect</a>`
-
-              await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: client.telegram_chat_id,
-                  text,
-                  parse_mode: 'HTML',
-                }),
-              })
-            }
-          }
-        }
-      }
-    } catch (tokenErr) {
-      console.error('Failed to run token expiry check:', tokenErr)
-    }
-  }
-
-  // Fetch approved posts that are due
-  const { data: posts, error } = await supabase
-    .from('posts')
-    .select('*, clients(*)')
-    .eq('status', 'approved')
-    .lte('scheduled_at', nowStr)
-    .order('scheduled_at', { ascending: true })
-    .limit(10)
-
-  if (error) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 500 })
-  }
-
   const results: Array<{ postId: string; status: string }> = []
 
-  for (const post of posts ?? []) {
-    const client = post.clients
-    if (!client?.linkedin_access_token || (!client?.linkedin_page_id && !client?.linkedin_person_id)) {
-      results.push({ postId: post.id, status: 'skipped:no_linkedin' })
-      continue
-    }
+  // 1. Crash recovery: never auto-retry, the post may already be live.
+  for (const row of await recoverStalePublishing(supabase)) {
+    results.push({ postId: row.id, status: 'recovered_stale_publishing' })
+    const brand = await brandFor(row.client_id)
+    await alert(
+      brand?.telegram_chat_id ?? null,
+      `⚠️ <b>Publishing was interrupted</b> for <b>${escapeHtml(brand?.name ?? 'your brand')}</b>. Check LinkedIn before retrying: the post may already be live.\n\n👉 <a href="${APP_URL}/posts/${row.id}">View post</a>`
+    )
+  }
 
-    if (client.linkedin_token_expires_at && new Date(client.linkedin_token_expires_at) < new Date()) {
-      results.push({ postId: post.id, status: 'skipped:token_expired' })
-      continue
-    }
-
-    // Lock row by setting failed temporarily (prevent double-publish on concurrent invocations)
-    const { error: lockError } = await supabase
-      .from('posts')
-      .update({ status: 'failed', error_message: 'Publishing...', updated_at: now })
-      .eq('id', post.id)
-      .eq('status', 'approved')
-
-    if (lockError) {
-      results.push({ postId: post.id, status: 'lock_failed' })
-      continue
-    }
-
+  // 2. Token expiry warning, once a day
+  if (now.getUTCHours() === 9 && now.getUTCMinutes() < 15) {
     try {
-      const linkedInPostId = await publishPost({
-        pageId: client.linkedin_page_id,
-        personId: client.linkedin_person_id,
-        token: client.linkedin_access_token,
-        caption: post.caption,
-        imageUrl: post.image_url,
-      })
-
-      const publishedAt = new Date().toISOString()
-      await supabase
-        .from('posts')
-        .update({ status: 'published', linkedin_post_id: linkedInPostId, published_at: publishedAt, error_message: null, updated_at: publishedAt })
-        .eq('id', post.id)
-
-      await supabase.from('post_history').insert({
-        post_id: post.id,
-        previous_status: 'approved',
-        new_status: 'published',
-        changed_by: 'edge_function:publish-posts',
-        note: `LinkedIn post: ${linkedInPostId}`,
-      })
-
-      results.push({ postId: post.id, status: 'published' })
+      await alertExpiringTokens(now)
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      await supabase
-        .from('posts')
-        .update({
-          status: 'failed',
-          error_message: message,
-          retry_count: (post.retry_count ?? 0) + 1,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', post.id)
+      console.error('Token expiry check failed:', err)
+    }
+  }
 
-      await supabase.from('post_history').insert({
-        post_id: post.id,
-        previous_status: 'approved',
-        new_status: 'failed',
-        changed_by: 'edge_function:publish-posts',
-        note: message,
-      })
+  // 3. Publish due posts. publishPost() claims each row atomically, so
+  // overlapping runs can't publish the same post twice. Only brands with a
+  // live LinkedIn connection are selected: otherwise their stuck posts would
+  // fill every batch and starve other brands (they get the expiry alert).
+  const nowIso = now.toISOString()
+  const { data: due, error } = await supabase
+    .from('posts')
+    .select('id, client_id, clients!inner(linkedin_access_token, linkedin_token_expires_at)')
+    .eq('status', 'approved')
+    .lte('scheduled_at', nowIso)
+    .not('clients.linkedin_access_token', 'is', null)
+    .or(`linkedin_token_expires_at.is.null,linkedin_token_expires_at.gt."${nowIso}"`, { referencedTable: 'clients' })
+    .order('scheduled_at', { ascending: true })
+    .limit(BATCH_SIZE)
 
-      // Notify via Telegram if configured
-      if (client?.telegram_chat_id) {
-        const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN')
-        if (botToken) {
-          try {
-            const escapeHtml = (str: string) =>
-              str
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/'/g, '&#039;')
+  if (error) return new Response(JSON.stringify({ error: error.message }), { status: 500 })
 
-            const appUrl = Deno.env.get('NEXT_PUBLIC_APP_URL') || 'https://socialigent.vercel.app'
-            const text = `⚠️ <b>Failed to publish post</b> for client <b>${escapeHtml(client.name)}</b>.\n\n<b>Error:</b> ${escapeHtml(message)}\n\n👉 <a href="${appUrl}/posts/${post.id}">View Post Details</a>`
+  for (const post of due ?? []) {
+    const outcome = await publishPost(supabase, {
+      postId: post.id,
+      allowedFrom: ['approved'],
+      actor: 'edge_function:publish-posts',
+      storageBaseUrl: Deno.env.get('SUPABASE_URL') ?? '',
+    })
 
-            await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                chat_id: client.telegram_chat_id,
-                text,
-                parse_mode: 'HTML',
-              }),
-            })
-          } catch (teleErr) {
-            console.error('Failed to send Telegram failure notification:', teleErr)
-          }
-        }
-      }
+    if (outcome.ok) {
+      results.push({ postId: post.id, status: 'published' })
+      continue
+    }
 
-      results.push({ postId: post.id, status: `failed: ${message}` })
+    results.push({ postId: post.id, status: `${outcome.code}: ${outcome.message}` })
+    if (outcome.code === 'linkedin_error' || outcome.code === 'invalid_image') {
+      const brand = await brandFor(post.client_id)
+      await alert(
+        brand?.telegram_chat_id ?? null,
+        `⚠️ <b>Failed to publish</b> a post for <b>${escapeHtml(brand?.name ?? 'your brand')}</b>.\n\n<b>Error:</b> ${escapeHtml(outcome.message.slice(0, 500))}\n\n👉 <a href="${APP_URL}/posts/${post.id}">View post</a>`
+      )
     }
   }
 

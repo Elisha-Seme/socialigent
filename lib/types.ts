@@ -1,12 +1,19 @@
-export type PostStatus = 'draft' | 'pending_approval' | 'approved' | 'rejected' | 'published' | 'failed'
+import type { PostingSlot } from '@/supabase/functions/_shared/content'
 
-export interface PostingSlot {
-  day: 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
-  time: string // "HH:MM" UTC
-}
+export type { PostingSlot }
+
+export type PostStatus =
+  | 'draft'
+  | 'pending_approval'
+  | 'approved'
+  | 'publishing'
+  | 'rejected'
+  | 'published'
+  | 'failed'
 
 export interface Client {
   id: string
+  user_id: string | null
   name: string
   brand_voice: string
   content_pillars: string[]
@@ -17,9 +24,21 @@ export interface Client {
   telegram_chat_id: string | null
   telegram_connect_token: string | null
   posting_schedule: PostingSlot[]
+  timezone: string
   is_active: boolean
   created_at: string
   updated_at: string
+}
+
+// What may be handed to client components: no secrets.
+export type ClientProfile = Omit<Client, 'linkedin_access_token' | 'telegram_connect_token'> & {
+  linkedin_connected: boolean
+}
+
+export function toClientProfile(client: Client): ClientProfile {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { linkedin_access_token, telegram_connect_token, ...rest } = client
+  return { ...rest, linkedin_connected: !!linkedin_access_token }
 }
 
 export interface Post {

@@ -28,8 +28,8 @@ export function GeneratePostButton({ clientId }: { clientId: string }) {
     toast.promise(
       promise,
       {
-        loading: 'Generating post caption & image (could take 10-15s)...',
-        success: 'Post draft generated successfully! Sent to Telegram.',
+        loading: 'Writing a draft (10-20s)...',
+        success: 'Draft ready for review.',
         error: (err) => err.message || 'Failed to generate post.',
       },
       {

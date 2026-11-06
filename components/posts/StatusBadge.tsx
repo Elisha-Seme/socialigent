@@ -5,11 +5,12 @@ const variants: Record<PostStatus, 'default' | 'secondary' | 'destructive' | 'ou
   draft: 'outline',
   pending_approval: 'secondary',
   approved: 'default',
+  publishing: 'secondary',
   rejected: 'destructive',
   published: 'default',
   failed: 'destructive',
 }
 
 export function StatusBadge({ status }: { status: PostStatus }) {
-  return <Badge variant={variants[status]}>{status.replace('_', ' ')}</Badge>
+  return <Badge variant={variants[status] ?? 'outline'}>{status.replace('_', ' ')}</Badge>
 }

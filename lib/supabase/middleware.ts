@@ -39,13 +39,23 @@ export const updateSession = async (request: NextRequest) => {
     data: { user },
   } = await supabase.auth.getUser()
 
+  const isRootPath = request.nextUrl.pathname === '/'
+
   if (!user) {
-    if (request.nextUrl.pathname.startsWith('/api')) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    if (!isRootPath) {
+      if (request.nextUrl.pathname.startsWith('/api')) {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+      }
+      const url = request.nextUrl.clone()
+      url.pathname = '/login'
+      return NextResponse.redirect(url)
     }
-    const url = request.nextUrl.clone()
-    url.pathname = '/login'
-    return NextResponse.redirect(url)
+  } else {
+    if (isRootPath) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/overview'
+      return NextResponse.redirect(url)
+    }
   }
 
   return supabaseResponse
